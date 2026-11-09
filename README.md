@@ -44,6 +44,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 
 项目可用根目录的 `Dockerfile` 和 `railway.toml` 部署到支持 HTTPS 和 WebSocket 的云托管。Railway 服务的公网端口使用 `8765`，持久卷挂载到 `/data`。公网模式为每个浏览器提供独立的模拟预约和通话记录。
 
+部署时在服务器的私有环境变量中设置高强度的 RECORDS_ADMIN_TOKEN 后，管理员可从「通话记录」或「预约后台」输入口令，查看所有访客的通话转写和预约。公开演示请使用虚构资料。
+
 `render.yaml` 使用 Render 免费实例，导入 Blueprint 时在 Render 中配置 `DASHSCOPE_API_KEY`。云语音仍按语音服务商的额度计费。免费实例休眠或重启后，SQLite 演示数据会清空。
 
 在托管平台的服务变量中配置语音提供商、模型和密钥。语音密钥由服务端读取。上传源码时只使用部署包中的文件，本地配置和既有记录留在本机。上线后先访问 `/health` 确认 `public_demo` 和 `microphone` 都为 `true`，再用实际公网地址开启麦克风做一次端到端验收。

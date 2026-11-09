@@ -93,6 +93,8 @@ main{margin-left:220px}.top{height:62px;background:#fff;border-bottom:1px solid 
 .stock-row:last-child,.activity-row:last-child{border-bottom:0}
 .activity-row small{color:var(--muted)}
 .booking-section,.strategy-panel{margin-top:16px}
+#records-access{padding-bottom:0}
+.booking-top:has(#booking-stock[hidden]){grid-template-columns:minmax(0,1fr)}
 .strategy-panel>.admin,.strategy-panel>#admin-content{margin:0 14px 12px}
 @media(max-width:880px){
   .call-layout,.records-layout,.booking-top,.evidence-columns{grid-template-columns:minmax(0,1fr)}

@@ -403,6 +403,66 @@ class Cases(unittest.TestCase):
             }).json()["snapshot"]
             self.assertEqual((state["appointment"]["slot"], state["appointment"]["version"]), ("S3", 2))
 
+    def test_records_admin_reads_across_visitors_without_sharing_visitor_access(self):
+        config = self.settings()
+        config.public_demo = True
+        config.records_admin = "test-records-admin-key"
+        admin = {"Authorization": "Bearer " + config.records_admin}
+        visitors = [{"X-Desk-Token": "desk_" + digit * 64} for digit in "ab"]
+        with TestClient(create_app(config)) as client:
+            calls = []
+            for index, (name, visitor) in enumerate(zip(("林小满", "周小雨"), visitors)):
+                opened = client.post("/api/sessions", headers=visitor,
+                                     json={"scenario": "bank_card", "customer_intake": True})
+                self.assertEqual(opened.status_code, 201)
+                session = opened.json()
+                path = "/api/sessions/" + session["session_id"]
+                auth = {"Authorization": "Bearer " + session["token"]}
+
+                def turn(words, sequence):
+                    response = client.post(path + "/turns", headers=auth,
+                                           json={"text": words, "event_id": ident("evt"), "expected_turn": sequence})
+                    self.assertEqual(response.status_code, 200)
+                    return response.json()["snapshot"]
+
+                turn(f"我叫{name}，手机号1990000099{index}", 0)
+                verified = turn("是我本人", 1)
+                slot = verified["slots"][0]["id"]
+                turn(slot, 2)
+                self.assertEqual(turn("可以", 3)["appointment"]["slot"], slot)
+                calls.append(session["session_id"])
+                self.assertEqual(client.get("/api/admin/calls", headers=auth).status_code, 403)
+
+            for index, visitor in enumerate(visitors):
+                archive = client.get("/api/desk/calls", headers=visitor).json()
+                self.assertEqual([call["session_id"] for call in archive["items"]], [calls[index]])
+                self.assertEqual(client.get("/api/desk/calls/" + calls[1 - index], headers=visitor).status_code, 403)
+                self.assertEqual(client.get("/api/desk/calls/" + calls[1 - index] + "/quality",
+                                            headers=visitor).status_code, 403)
+                booking = client.get("/api/desk/booking", headers=visitor).json()
+                self.assertEqual({row["customer_name"] for row in booking["appointments"] if row["customer_name"]},
+                                 {("林小满", "周小雨")[index]})
+                self.assertEqual([op["session_id"] for op in booking["operations"]], [calls[index]])
+
+            for path in ("/calls", "/calls/" + calls[0], "/calls/" + calls[0] + "/quality", "/booking"):
+                self.assertEqual(client.get("/api/admin" + path, headers=visitors[0]).status_code, 403)
+                self.assertEqual(client.get("/api/admin" + path, headers={"Authorization":"Bearer wrong"}).status_code, 403)
+            archive = client.get("/api/admin/calls", headers=admin).json()
+            self.assertEqual([call["session_id"] for call in archive["items"]], calls[::-1])
+            for session in calls:
+                path = "/api/admin/calls/" + session
+                detail = client.get(path, headers=admin).json()
+                self.assertFalse(detail["call"]["closed"])
+                self.assertTrue(any(event["event_type"] == "user.received" for event in detail["events"]))
+                last = detail["events"][-1]["authoritative_sequence"]
+                self.assertEqual(client.get(path + f"?after={last}", headers=admin).json()["events"], [])
+                self.assertEqual(client.get(path + "/quality", headers=admin).status_code, 200)
+            booking = client.get("/api/admin/booking", headers=admin).json()
+            self.assertEqual({row["customer_name"] for row in booking["appointments"]}, {"林小满", "周小雨"})
+            self.assertEqual({op["session_id"] for op in booking["operations"]}, set(calls))
+            self.assertEqual(booking["slots"], [])
+            self.assertEqual(client.get("/api/admin/policies", headers=admin).status_code, 403)
+
     def test_bank_card_appointment_from_unbooked(self):
         app = create_app(self.settings())
         desk = {"X-Desk-Token": "desk_" + "c" * 64}

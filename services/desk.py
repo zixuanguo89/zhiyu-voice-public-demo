@@ -56,8 +56,8 @@ class CallDesk:
                 FROM desk_calls d JOIN sessions s ON s.id=d.session
                 LEFT JOIN session_results r ON r.session=s.id
                 LEFT JOIN customer_intakes i ON i.session=s.id AND i.phone_tail IS NOT NULL
-                WHERE d.desk=? AND (? IS NULL OR d.rowid<?) ORDER BY d.rowid DESC LIMIT 41
-            """, (desk, before, before)).fetchall()
+                WHERE (? IS NULL OR d.desk=?) AND (? IS NULL OR d.rowid<?) ORDER BY d.rowid DESC LIMIT 41
+            """, (desk, desk, before, before)).fetchall()
         return {"items": [summary(row) for row in rows[:40]],
                 "next_before": rows[39]["cursor"] if len(rows) > 40 else None}
 
@@ -68,49 +68,52 @@ class CallDesk:
                 FROM desk_calls d JOIN sessions s ON s.id=d.session
                 LEFT JOIN session_results r ON r.session=s.id
                 LEFT JOIN customer_intakes i ON i.session=s.id AND i.phone_tail IS NOT NULL
-                WHERE d.desk=? AND d.session=?
-            """, (desk, session)).fetchone()
+                WHERE (? IS NULL OR d.desk=?) AND d.session=?
+            """, (desk, desk, session)).fetchone()
             if row is None:
                 raise Rejection("FORBIDDEN")
             return {"call": summary(row), "events": events(db, session, after)}
 
     def booking(self, desk):
-        branch_space = bank_space(desk)
-        self.conversation.business.refresh_bank_schedule(branch_space)
+        branch_space = bank_space(desk) if desk else None
+        if branch_space:
+            self.conversation.business.refresh_bank_schedule(branch_space)
         with self.conversation.business.store.tx() as db:
             appointments = []
             for row in db.execute("""
                 SELECT a.id,a.owner,a.slot,a.status,a.version,s.start,a.space,c.name AS customer_name,c.phone_tail
                 FROM appointments a JOIN slots s ON s.space=a.space AND s.id=a.slot
                 LEFT JOIN bank_customers c ON c.space=a.space AND 'C'||c.number=a.owner
-                WHERE a.space IN (?,?)
-                ORDER BY a.space=?,a.id
-            """, (desk, branch_space, desk)):
+                WHERE a.space IN (?,?) OR (? IS NULL AND c.number IS NOT NULL)
+                ORDER BY a.space=?,a.space,a.id
+            """, (desk, branch_space, desk, desk)):
                 record = dict(row)
                 bank = is_bank_space(record.pop("space"))
                 appointments.append({**record, "service": BANK_SERVICE if bank else "服务预约",
                                      "branch": BANK_BRANCH if bank else None})
-            slots = [
+            slots = [] if desk is None else [
                 {**slot, "branch": branch} for space, branch in ((branch_space, BANK_BRANCH), (desk, None))
                 for slot in self.conversation.business._slots(db, space)
             ]
-            handoffs = [{"session_id": row["session"], **json.loads(row["data"])} for row in db.execute(
-                "SELECT session,data FROM handoffs WHERE space IN (?,?) ORDER BY rowid DESC LIMIT 20",
-                (desk, branch_space))]
+            handoffs = [{"session_id": row["session"], **json.loads(row["data"])} for row in db.execute("""
+                SELECT session,data FROM handoffs
+                WHERE space IN (?,?) OR (? IS NULL AND (space GLOB 'bank_card:desk_*' OR space GLOB 'desk_*'))
+                ORDER BY rowid DESC LIMIT 20
+            """, (desk, branch_space, desk))]
         with self.store.tx() as db:
             operations = [{"operation_id": row["id"], "session_id": row["session"], "state": row["state"],
                            "attempts": row["attempts"], "request": json.loads(row["request"]),
                            "receipt": json.loads(row["receipt"]) if row["receipt"] else None}
                           for row in db.execute("""
                 SELECT o.* FROM operations o JOIN desk_calls d ON d.session=o.session
-                WHERE d.desk=? ORDER BY o.rowid DESC LIMIT 30
-            """, (desk,))]
+                WHERE (? IS NULL OR d.desk=?) ORDER BY o.rowid DESC LIMIT 30
+            """, (desk, desk))]
             placeholders = ",".join("?" for _ in BUSINESS_EVENTS)
             activity = [{"event_type": row["type"], "session_id": row["session"], "turn_id": row["turn"],
                          "occurred_at": iso(row["at"]), "payload": json.loads(row["payload"])}
                         for row in db.execute(f"""
                 SELECT e.type,e.session,e.turn,e.at,e.payload FROM events e JOIN desk_calls d ON d.session=e.session
-                WHERE d.desk=? AND e.type IN ({placeholders}) ORDER BY e.sequence DESC LIMIT 30
-            """, (desk, *BUSINESS_EVENTS))]
+                WHERE (? IS NULL OR d.desk=?) AND e.type IN ({placeholders}) ORDER BY e.sequence DESC LIMIT 30
+            """, (desk, desk, *BUSINESS_EVENTS))]
         return {"appointments": appointments, "slots": slots, "handoffs": handoffs,
                 "operations": operations, "activity": activity}

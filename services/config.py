@@ -24,6 +24,7 @@ class Settings:
         self.persistent_storage = env.get("PERSISTENT_STORAGE", "0") == "1"
         self.admin = env.get("ADMIN_TOKEN") or secrets.token_urlsafe(32)
         self.ephemeral_admin = not self.public_demo and not env.get("ADMIN_TOKEN")
+        self.records_admin = env.get("RECORDS_ADMIN_TOKEN") or ("" if self.public_demo else self.admin)
         self.artifacts = Path(env.get("ARTIFACT_DIR", "artifacts"))
         state = self.artifacts / "public" if self.public_demo else self.artifacts
         database = env.get("DATABASE_URL", f"sqlite:///{state / 'app.sqlite3'}")

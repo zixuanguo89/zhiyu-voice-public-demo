@@ -20,12 +20,23 @@
   </aside>
   <main>
     <header class="top"><span id="breadcrumb">工作台 / 打电话</span><span id="environment" class="chip">检测服务中</span></header>
+    <div class="page" id="records-access" hidden>
+      <section class="panel">
+        <div class="panel-head"><div><h2>记录查看范围</h2><p id="records-scope">当前仅显示本浏览器的记录</p></div>
+          <button id="records-lock" type="button" hidden>退出管理查看</button></div>
+        <form id="records-access-form" class="panel-body actions">
+          <label class="sr-only" for="records-key">记录管理员口令</label>
+          <input id="records-key" type="password" maxlength="180" autocomplete="off" placeholder="记录管理员口令" required>
+          <button id="records-unlock" class="primary">查看所有访客记录</button>
+        </form>
+      </section>
+    </div>
     <div class="page" id="call">
       <section class="intro">
         <p class="eyebrow">银行网点 · 预约演练</p>
         <h1>打电话</h1>
         <p>呼出后先留全名和预约手机号，再办理 Visa 借记卡到店预约。</p>
-        <p class="hint" id="public-notice" hidden>公网演示请用虚构资料。当前浏览器的预约和通话记录会在免费实例休眠或重启后清空。</p>
+        <p class="hint" id="public-notice" hidden>公网演示请使用虚构资料。通话及预约记录会留存供网站管理员查看，免费实例休眠或重启后会清空。</p>
       </section>
       <div class="call-layout">
         <div class="side">
@@ -125,7 +136,7 @@
       <section class="intro"><p class="eyebrow">会话留存</p><h1>通话记录</h1><p>选择一通电话查看对话。通话中的记录会自动更新。</p></section>
       <div class="records-layout">
         <section class="panel record-list">
-          <div class="panel-head"><div><h2>最近通话</h2><p>本浏览器工作台</p></div></div>
+          <div class="panel-head"><div><h2>最近通话</h2><p id="records-list-scope">本浏览器工作台</p></div></div>
           <div class="panel-body" id="record-list"></div>
           <div class="panel-body"><button id="older-records" hidden>更早的通话</button></div>
         </section>
@@ -147,10 +158,10 @@
       <section class="intro"><p class="eyebrow">预约业务沙箱</p><h1>预约后台</h1><p>查看真实写入沙箱的预约、可用时段，以及 AI 每一次查询、确认和提交的结果。</p></section>
       <div class="booking-top">
         <section class="panel">
-          <div class="panel-head"><div><h2>预约台账</h2><p>同一工作台可留存多位客户的预约，仅显示手机号尾号</p></div></div>
+          <div class="panel-head"><div><h2>预约台账</h2><p id="booking-scope">本浏览器的预约，仅显示手机号尾号</p></div></div>
           <div id="booking-table" class="panel-body table-scroll"></div>
         </section>
-        <section class="panel">
+        <section class="panel" id="booking-stock">
           <div class="panel-head"><div><h2>时段库存</h2><p>按工作日下午滚动开放，随办理结果更新</p></div></div>
           <div id="booking-slots" class="panel-body"></div>
         </section>

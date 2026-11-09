@@ -12,6 +12,7 @@ const kinds = {"session.disclosed":"AI 身份与来意说明","user.received":"�
   "session.closed":"结束通话","session.written":"会话结果回写"};
 let credential = JSON.parse(sessionStorage.getItem("zhiyu") || "null");
 let snapshot, adminToken = "", view = "call", features = {}, sent = false, transport, pendingRefresh;
+let recordsToken = "";
 let chatKey = "", toastTimer;
 let dialing = false, hangingUp = false, voiceDuration = 0;
 const deskToken = localStorage.getItem("zhiyu.desk") ||
@@ -51,6 +52,9 @@ function admin(path, options={}) {
 function desk(path, options={}) {
   return api(path,{...options, headers:{"X-Desk-Token":deskToken,...options.headers}});
 }
+function recordData(path, token=recordsToken) {
+  return token ? api("/api/admin" + path, {token}) : desk("/api/desk" + path);
+}
 function chip(el, text, tone="") {
   el.textContent = text;
   el.className = "chip" + (tone ? " " + tone : "");
@@ -70,6 +74,7 @@ function go(next, callId) {
     else b.removeAttribute("aria-current");
   });
   $("breadcrumb").textContent = "工作台 / " + label[view];
+  $("records-access").hidden = view === "call" || !features.records_admin_enabled;
   if (view === "records") {
     if (callId) selectCall(callId);
     loadRecords().catch((e) => notify(e.message));
@@ -266,8 +271,8 @@ function selectCall(id) {
   recordCursor = 0;
   recordEvents = [];
   chatKey = "";
-  $("record-title").textContent = "通话 " + id.slice(-8);
-  $("record-meta").textContent = "正在载入通话记录…";
+  $("record-title").textContent = id ? "通话 " + id.slice(-8) : "选择一通电话";
+  $("record-meta").textContent = id ? "正在载入通话记录…" : "通话转写和结果会保存在这里";
   $("record-status").hidden = true;
   $("record-evidence").hidden = true;
   $("record-evidence").open = false;
@@ -297,15 +302,18 @@ function appendEvidence(event) {
 async function loadQuality() {
   if (!selectedCall || !$("record-evidence").open) return;
   const id = selectedCall;
+  const token = recordsToken;
+  $("semantic").hidden = !!token;
   $("semantic").disabled = !adminToken;
-  const report = await desk("/api/desk/calls/" + id + "/quality");
-  if (id === selectedCall) renderQuality(report);
+  const report = await recordData("/calls/" + id + "/quality", token);
+  if (id === selectedCall && token === recordsToken) renderQuality(report);
 }
 async function loadRecords() {
   if (recordLoading) return recordLoading;
+  const token = recordsToken;
   recordLoading = (async () => {
-    const page = await desk("/api/desk/calls");
-    if (view !== "records") return;
+    const page = await recordData("/calls", token);
+    if (view !== "records" || token !== recordsToken) return;
     nextBefore = olderBefore === undefined ? page.next_before : olderBefore;
     const records = [...new Map([...page.items,...olderCalls].map((item) => [item.session_id,item])).values()];
     if (!selectedCall && records.length) selectCall(records[0].session_id);
@@ -324,13 +332,14 @@ async function loadRecords() {
           node("small",[customerLabel(call),formatStamp(call.created_at),call.turns + " 轮"].filter(Boolean).join(" · ")));
         return row;
       });
-      $("record-list").replaceChildren(...(rows.length ? rows : [node("p","拨出第一通电话后，记录会出现在这里。","hint")]));
+      $("record-list").replaceChildren(...(rows.length ? rows : [node("p",token ? "暂时没有访客通话。" :
+        "拨出第一通电话后，记录会出现在这里。","hint")]));
     }
     $("older-records").hidden = nextBefore == null;
     if (!selectedCall) return;
     const id = selectedCall;
-    const data = await desk(`/api/desk/calls/${id}?after=${recordCursor}`);
-    if (selectedCall !== id || view !== "records") return;
+    const data = await recordData(`/calls/${id}?after=${recordCursor}`, token);
+    if (selectedCall !== id || view !== "records" || token !== recordsToken) return;
     const {call, events} = data;
     $("record-meta").textContent = [customerLabel(call),formatStamp(call.created_at),
       call.turns + " 轮用户发言"].filter(Boolean).join(" · ");
@@ -350,9 +359,11 @@ $("record-evidence").ontoggle = () => loadQuality().catch((e) => notify(e.messag
 $("older-records").onclick = async () => {
   const cursor = nextBefore;
   if (cursor == null) return;
+  const token = recordsToken;
   $("older-records").disabled = true;
   try {
-    const page = await desk("/api/desk/calls?before=" + cursor);
+    const page = await recordData("/calls?before=" + cursor, token);
+    if (token !== recordsToken) return;
     olderCalls.push(...page.items);
     olderBefore = page.next_before;
     await loadRecords();
@@ -417,7 +428,7 @@ function renderBooking(data) {
     a.id,a.branch ? a.service + " · " + a.branch : a.service,
     customerLabel(a) || (a.branch ? "演示客户 " + a.owner : a.owner),a.branch ? formatSlot(a) : a.slot + " · " + formatSlot(a),
     node("span",a.status === "active" ? "有效" : "已取消","chip"),a.version
-  ]),"首次呼出后会创建本工作台的预约数据。");
+  ]),recordsToken ? "暂时没有访客预约。" : "首次呼出后会创建本工作台的预约数据。");
   $("booking-slots").replaceChildren(...(data.slots.length ? data.slots.map((slot) => {
     const row = node("div",undefined,"stock-row");
     row.append(node("strong",slot.branch ? "银行网点" : slot.id),node("span",formatSlot(slot)),
@@ -443,16 +454,51 @@ function renderBooking(data) {
 }
 async function loadBooking() {
   if (bookingLoading) return bookingLoading;
+  const token = recordsToken;
   bookingLoading = (async () => {
-    const data = await desk("/api/desk/booking");
+    const data = await recordData("/booking", token);
     const key = JSON.stringify(data);
-    if (key !== bookingKey && view === "booking") {
+    if (key !== bookingKey && view === "booking" && token === recordsToken) {
       bookingKey = key;
       renderBooking(data);
     }
   })().finally(() => { bookingLoading = null; });
   return bookingLoading;
 }
+async function setRecordsAccess(token) {
+  recordsToken = token;
+  $("records-access-form").hidden = !!token;
+  $("records-lock").hidden = !token;
+  $("records-scope").textContent = token ? "管理员视图 · 所有访客的通话和预约" : "当前仅显示本浏览器的记录";
+  $("records-list-scope").textContent = token ? "所有访客 · 自动更新" : "本浏览器工作台";
+  $("booking-scope").textContent = token ? "所有访客的预约，仅显示手机号尾号" : "本浏览器的预约，仅显示手机号尾号";
+  $("booking-stock").hidden = !!token;
+  selectCall(null);
+  nextBefore = null;
+  olderBefore = undefined;
+  olderCalls = [];
+  callListKey = "";
+  bookingKey = "";
+  $("record-list").replaceChildren();
+  $("older-records").hidden = true;
+  renderBooking({appointments:[],slots:[],operations:[],activity:[],handoffs:[]});
+  await Promise.allSettled([recordLoading, bookingLoading]);
+  if (token !== recordsToken) return;
+  if (view === "records") await loadRecords();
+  if (view === "booking") await loadBooking();
+}
+$("records-access-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const token = $("records-key").value.trim();
+  $("records-key").value = "";
+  $("records-unlock").disabled = true;
+  try {
+    await recordData("/calls", token);
+    if (token) await setRecordsAccess(token);
+  } catch (e) { notify(e.message === "FORBIDDEN" ? "记录管理员口令不正确。" : e.message); }
+  finally { $("records-unlock").disabled = false; }
+};
+$("records-lock").onclick = () => setRecordsAccess("").catch((e) => notify(e.message));
 $("admin-form").onsubmit = async (event) => {
   event.preventDefault();
   adminToken = $("admin-key").value.trim();
@@ -806,13 +852,14 @@ $("mic").onclick = () => {
 async function init() {
   try {
     features = await api("/health");
+    $("records-access").hidden = view === "call" || !features.records_admin_enabled;
     chip($("environment"),features.microphone ? "云语音已配置 · 业务沙箱" : "文本模式 · 业务沙箱");
     $("fault").disabled = !features.demo_faults;
     if (features.public_demo) {
       document.querySelector(".strategy-panel").hidden = true;
       $("public-notice").hidden = false;
       if (features.persistent_storage) {
-        $("public-notice").textContent = "公网演示请用虚构资料。预约和通话记录保存在云端，同一浏览器可再次查看。";
+        $("public-notice").textContent = "公网演示请使用虚构资料。通话及预约记录保存在云端，网站管理员可查看。";
       }
     }
     $("mic-status").textContent = features.microphone ? "可开启麦克风进行语音通话。" : "云语音待配置，当前可使用文本。";

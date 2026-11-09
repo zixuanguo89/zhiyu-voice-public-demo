@@ -18,3 +18,5 @@ services:
         value: dashscope
       - key: DASHSCOPE_API_KEY
         sync: false
+      - key: RECORDS_ADMIN_TOKEN
+        sync: false

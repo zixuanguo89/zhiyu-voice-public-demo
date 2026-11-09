@@ -102,6 +102,10 @@ def create_app(settings=None):
         if settings.public_demo or not secrets.compare_digest(bearer(header).encode(), settings.admin.encode()):
             raise Rejection("FORBIDDEN")
 
+    def authorize_records(header):
+        if not settings.records_admin or not secrets.compare_digest(bearer(header).encode(), settings.records_admin.encode()):
+            raise Rejection("FORBIDDEN")
+
     async def recovery():
         while True:
             try:
@@ -179,7 +183,7 @@ def create_app(settings=None):
         with conversation.business.store.tx() as db:
             db.execute("SELECT 1 FROM appointments LIMIT 1").fetchone()
         return {"status": "ok", "business": "mock", "microphone": settings.audio, "demo_faults": settings.demo,
-                "persistent_storage": settings.persistent_storage,
+                "persistent_storage": settings.persistent_storage, "records_admin_enabled": bool(settings.records_admin),
                 "public_demo": settings.public_demo, "voice_transport": "websocket" if settings.public_demo else "webrtc",
                 "providers": {k: {"mode": v[0], "model": v[2] if v[0] == "dashscope" else None}
                               for k, v in settings.providers.items()}}
@@ -217,6 +221,27 @@ def create_app(settings=None):
     @app.get("/api/desk/booking")
     async def desk_booking(x_desk_token: DeskAuth = None):
         return desk.booking(desk_key(x_desk_token))
+
+    @app.get("/api/admin/calls")
+    async def admin_calls(before: int | None = None, authorization: Auth = None):
+        authorize_records(authorization)
+        return desk.calls(None, before)
+
+    @app.get("/api/admin/calls/{session}")
+    async def admin_call(session: str, after: int = 0, authorization: Auth = None):
+        authorize_records(authorization)
+        return desk.detail(None, session, after)
+
+    @app.get("/api/admin/calls/{session}/quality")
+    async def admin_call_quality(session: str, authorization: Auth = None):
+        authorize_records(authorization)
+        desk.detail(None, session, 0)
+        return read_report(conversation, session)
+
+    @app.get("/api/admin/booking")
+    async def admin_booking(authorization: Auth = None):
+        authorize_records(authorization)
+        return desk.booking(None)
 
     @app.get("/api/sessions/{session}")
     async def snapshot(session: str, authorization: Auth = None):
