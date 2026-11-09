@@ -14,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.websockets import WebSocketState
 
 from services.business import Rejection, Sandbox
 from services.config import Settings
@@ -103,7 +104,7 @@ def create_app(settings=None):
     async def recovery():
         while True:
             try:
-                conversation.recover()
+                conversation.recover(session for session, call in calls.items() if not call.closed)
                 for session, call in list(calls.items()):
                     snap = conversation.snapshot(session)
                     if call.closed or snap["closed"]:
@@ -175,6 +176,7 @@ def create_app(settings=None):
         with conversation.business.store.tx() as db:
             db.execute("SELECT 1 FROM appointments LIMIT 1").fetchone()
         return {"status": "ok", "business": "mock", "microphone": settings.audio, "demo_faults": settings.demo,
+                "persistent_storage": settings.persistent_storage,
                 "public_demo": settings.public_demo, "voice_transport": "websocket" if settings.public_demo else "webrtc",
                 "providers": {k: {"mode": v[0], "model": v[2] if v[0] == "dashscope" else None}
                               for k, v in settings.providers.items()}}
@@ -344,17 +346,10 @@ def create_app(settings=None):
             calls[session] = call
             call.spawn(call.write())
             call.spawn(call.asr())
-            async with asyncio.timeout(settings.voice_max_seconds + 5):
-                while not call.closed:
-                    frame = await socket.receive()
-                    if frame["type"] == "websocket.disconnect":
-                        return
-                    if (data := frame.get("bytes")) is not None:
-                        if len(data) != 1280:
-                            break
-                        call.input_audio(data)
-                    elif (command := frame.get("text")) is not None:
-                        call.control(command)
+            reader = call.spawn(call.read())
+            await asyncio.wait((reader,))
+            if not reader.cancelled():
+                reader.result()
         except WebSocketDisconnect:
             return
         except (Rejection, TimeoutError, ValueError, KeyError):
@@ -364,7 +359,11 @@ def create_app(settings=None):
                 if calls.get(session) is call:
                     calls.pop(session, None)
                 await call.close()
-        await socket.close()
+        if socket.client_state != WebSocketState.DISCONNECTED:
+            try:
+                await socket.close()
+            except WebSocketDisconnect:
+                pass
 
     def set_job(job, status, detail):
         with conversation.store.tx(write=True) as db:

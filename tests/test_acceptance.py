@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Barrier
+from time import sleep
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -576,6 +577,50 @@ class Cases(unittest.TestCase):
         active_slot = next(slot for slot in state["slots"] if slot["id"] == booked["slot"])
         self.assertFalse(active_slot["available"])
         self.assertTrue(any(slot["start"].startswith("2026-12-04") for slot in state["slots"]))
+
+    def test_connected_voice_session_outlives_inactive_session_expiry(self):
+        config = self.settings()
+        config.public_demo = config.audio = True
+        config.session_ttl = 10
+        app = create_app(config)
+        app.state.conversation.clock = self.clock
+        desk = {"X-Desk-Token": "desk_" + "c" * 64}
+        site = "https://example.test"
+
+        async def recognize(_provider, audio, on_text, on_ready):
+            on_ready()
+            await audio.get()
+            await on_text("我叫林小满", True, True)
+            await audio.get()
+
+        with patch("services.media.recognize", recognize), TestClient(app, base_url=site) as client:
+            options = {"scenario": "bank_card", "customer_intake": True}
+            active = client.post("/api/sessions", json=options, headers=desk).json()
+            inactive = client.post("/api/sessions", json=options, headers=desk).json()
+            path = "/api/sessions/" + active["session_id"]
+            auth = {"Authorization": "Bearer " + active["token"]}
+            with client.websocket_connect("wss://example.test" + path + "/voice", headers={"Origin": site}) as socket:
+                socket.send_json({"token": active["token"], "greet": False})
+                socket.send_text("ready")
+                self.assertEqual(socket.receive_json()["type"], "ready")
+                self.now += 12
+                for _ in range(20):
+                    if app.state.conversation.snapshot(inactive["session_id"])["closed"]:
+                        break
+                    sleep(0.1)
+                self.assertTrue(app.state.conversation.snapshot(inactive["session_id"])["closed"])
+                self.assertEqual(client.get(path, headers=auth).status_code, 200)
+                socket.send_bytes(bytes(1280))
+                for _ in range(6):
+                    if socket.receive_json()["type"] == "state":
+                        break
+                self.assertEqual(client.get(path, headers=auth).json()["intake_stage"], "phone")
+                self.assertEqual(client.post(path + "/close", headers=auth).status_code, 200)
+                for _ in range(6):
+                    frame = socket.receive()
+                    if frame["type"] == "websocket.close":
+                        break
+                self.assertEqual(frame["type"], "websocket.close")
 
     def test_bank_understands_natural_identity_answers(self):
         desk = "desk_" + "e" * 64

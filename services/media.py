@@ -106,10 +106,7 @@ class VoiceCall:
 
     async def asr(self):
         try:
-            async with asyncio.timeout(self.settings.voice_max_seconds):
-                await recognize(self.settings.providers["ASR"], self.audio, self.on_text, self.mark_asr_ready)
-        except TimeoutError:
-            self.send({"type": "failure", "message": "已达到单次语音时长上限，可重新连接或用文本继续。"})
+            await recognize(self.settings.providers["ASR"], self.audio, self.on_text, self.mark_asr_ready)
         except ProviderError as exc:
             self.record("provider.failed", {"stage": "ASR", "code": str(exc)})
             self.send({"type": "failure", "message": "语音识别已断开。请重连或使用文本办理。"})
@@ -282,6 +279,18 @@ class SocketCall(VoiceCall):
     def send(self, value):
         if not self.closed and not self.output.full():
             self.output.put_nowait(json.dumps(value, ensure_ascii=False))
+
+    async def read(self):
+        while not self.closed:
+            frame = await self.socket.receive()
+            if frame["type"] == "websocket.disconnect":
+                return
+            if (data := frame.get("bytes")) is not None:
+                if len(data) != 1280:
+                    return
+                self.input_audio(data)
+            elif (command := frame.get("text")) is not None:
+                self.control(command)
 
     async def write(self):
         while not self.closed:

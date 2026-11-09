@@ -174,7 +174,8 @@ class Conversation:
                 raise Rejection("SESSION_CLOSED")
             if expected_turn is not None and expected_turn != row["turn"]:
                 return False
-            db.execute("UPDATE sessions SET turn=turn+1 WHERE id=?", (session,))
+            db.execute("UPDATE sessions SET turn=turn+1,expires=MAX(expires,?) WHERE id=?",
+                       (self.clock() + self.session_ttl, session))
             db.execute("DELETE FROM reports WHERE session=?", (session,))
             row = self._get(db, session)
             intake = db.execute("SELECT * FROM customer_intakes WHERE session=?", (session,)).fetchone()
@@ -689,13 +690,20 @@ class Conversation:
                     barrier("before_writeback")
                 self._finish(db, row, live, receipt)
 
-    def recover(self):
+    def recover(self, active_sessions=()):
+        active_sessions = set(active_sessions)
+        now = self.clock()
+        threshold = now + self.session_ttl / 2 if active_sessions else now
         with self.store.tx() as db:
-            now = self.clock()
-            expired = [row[0] for row in db.execute("SELECT id FROM sessions WHERE closed=0 AND expires<=?", (now,))]
+            nearing_expiry = db.execute("SELECT id,expires FROM sessions WHERE closed=0 AND expires<=?", (threshold,)).fetchall()
             due = [row[0] for row in db.execute(f"SELECT session FROM operations WHERE {PENDING} AND next_at<=?", (now,))]
-        for session in expired:
-            self.close(session)
+        renewals = [(now + self.session_ttl, row["id"]) for row in nearing_expiry if row["id"] in active_sessions]
+        if renewals:
+            with self.store.tx(write=True) as db:
+                db.executemany("UPDATE sessions SET expires=MAX(expires,?) WHERE id=? AND closed=0", renewals)
+        for row in nearing_expiry:
+            if row["id"] not in active_sessions and row["expires"] <= now:
+                self.close(row["id"])
         for session in due:
             self.advance(session)
 

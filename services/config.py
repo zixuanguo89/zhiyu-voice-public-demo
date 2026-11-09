@@ -21,6 +21,7 @@ class Settings:
         self.host = env.get("HOST", "127.0.0.1")
         self.port = int(env.get("PORT", "8765"))
         self.public_demo = env.get("PUBLIC_DEMO", "0") == "1"
+        self.persistent_storage = env.get("PERSISTENT_STORAGE", "0") == "1"
         self.admin = env.get("ADMIN_TOKEN") or secrets.token_urlsafe(32)
         self.ephemeral_admin = not self.public_demo and not env.get("ADMIN_TOKEN")
         self.artifacts = Path(env.get("ARTIFACT_DIR", "artifacts"))
@@ -35,13 +36,8 @@ class Settings:
         self.demo = not self.public_demo and env.get("ENABLE_DEMO_FAULTS", "1") == "1"
         self.session_ttl = int(env.get("SESSION_TTL", "3600"))
         self.confirmation_ttl = int(env.get("CONFIRMATION_TTL", "120"))
-        self.voice_max_seconds = int(env.get("VOICE_MAX_SECONDS", "300"))
         if self.session_ttl <= 0 or self.confirmation_ttl <= 0:
             raise ValueError("Session and confirmation TTL must be positive")
-        if not 30 <= self.voice_max_seconds <= 1800:
-            raise ValueError("VOICE_MAX_SECONDS must be between 30 and 1800")
-        if self.public_demo:
-            self.voice_max_seconds = min(self.voice_max_seconds, 120)
         ws = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
         self.providers = {}
         for name, endpoint, model in [
