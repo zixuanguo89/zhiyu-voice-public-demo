@@ -26,13 +26,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 
 银行演示按未来两周的工作日下午 14:00 至 17:00 排班，每半小时一个预约时段。可以直接说「下周二下午三点半有空吗」。如果推荐时间都不方便，客服会询问您哪天下午有空；找不到匹配时段时可以继续换时间或转人工。
 
+客户要求转人工时，系统会生成演示工单，播报「好的，稍后由人工客服与您对接」，播放结束后自动挂断。文字办理会显示同样的答复并结束会话。工单可在预约后台查看。
+
 ## 配置云语音
 
 1. 在阿里云百炼 **华北2（北京）** 创建或复制 API Key，确保该业务空间有权调用 Paraformer、CosyVoice 和 Qwen。 [百炼密钥管理](https://help.aliyun.com/zh/model-studio/get-api-key/)
 2. 如果项目正在运行，先在启动窗口按 Ctrl+C。双击 `configure-cloud.cmd`，在本机窗口粘贴 API Key。有业务空间 ID 时填写，可使用专属域名。留空使用百炼兼容域名。 [北京地域接入域名](https://help.aliyun.com/zh/model-studio/beijing-access-information)
 3. 脚本会用一条合成测试语句检查 TTS、ASR 和 LLM。三项通过后保存到本机 `.env` 并启动项目。打开工作台，点击 **呼出电话** 并允许麦克风。显示「已接通」后按右侧 Visa 借记卡预约脚本交谈。通话中可切到 **通话记录** 查看实时转写。
 
-联通结果保存在 `artifacts/cloud-preflight.json`。该检查使用合成音频，其时长属于服务联通诊断。浏览器通话时延和真实插话需要另行测量。检查调用计入账户额度。语音验收只使用合成或授权脱敏输入。通话可以持续至主动挂断，网络或云语音服务断开后可重连。公网演示的单通对话轮数和使用频率限额仍适用。
+联通结果保存在 `artifacts/cloud-preflight.json`。该检查使用合成音频，其时长属于服务联通诊断。浏览器通话时延和真实插话需要另行测量。检查调用计入账户额度。语音验收只使用合成或授权脱敏输入。单通电话可以持续交谈，直到主动挂断或转人工结束。网络或云语音服务断开后可重连。公网入口有使用频率和并发保护。
 
 已有配置可执行 `.\.venv\Scripts\python.exe -m services.cloud_setup --check-only` 重新检测。也可参考 `.env.example` 手动配置。密钥保存在本机，`.env` 已加入忽略清单。
 
@@ -40,7 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 
 ## 公网演示
 
-项目可用根目录的 `Dockerfile` 和 `railway.toml` 部署到支持 HTTPS 和 WebSocket 的云托管。Railway 服务的公网端口使用 `8765`，持久卷挂载到 `/data`。公网模式为每个浏览器提供独立的模拟预约和通话记录，并限制对话轮数与调用次数。
+项目可用根目录的 `Dockerfile` 和 `railway.toml` 部署到支持 HTTPS 和 WebSocket 的云托管。Railway 服务的公网端口使用 `8765`，持久卷挂载到 `/data`。公网模式为每个浏览器提供独立的模拟预约和通话记录。
 
 `render.yaml` 使用 Render 免费实例，导入 Blueprint 时在 Render 中配置 `DASHSCOPE_API_KEY`。云语音仍按语音服务商的额度计费。免费实例休眠或重启后，SQLite 演示数据会清空。
 

@@ -111,7 +111,8 @@ function renderDialer() {
   $("start-label").textContent = snapshot?.closed ? "重新呼出" : "呼出电话";
   $("text-start").disabled = dialing;
   $("close").disabled = !usable || hangingUp;
-  $("mic").disabled = !usable || dialing || hangingUp || !features.microphone || Boolean(transport && !online);
+  $("mic").disabled = !usable || snapshot?.state === "HANDOFF" || dialing || hangingUp ||
+    !features.microphone || Boolean(transport && !online);
   $("mic-label").textContent = online ? muted ? "取消静音" : "静音" : "接通语音";
   $("mic").setAttribute("aria-pressed", String(Boolean(muted)));
   renderClock();
@@ -126,9 +127,9 @@ function render(s) {
   if ($("call-response").textContent !== reply) $("call-response").textContent = reply;
   renderDialer();
   $("compose-panel").hidden = !usable;
-  $("send").disabled = !usable || sent;
+  $("send").disabled = !usable || s.state === "HANDOFF" || sent;
   renderCancelActions(s);
-  $("utterance").disabled = !usable;
+  $("utterance").disabled = !usable || s.state === "HANDOFF";
   const prompts = {name:"例如：我叫林小满",phone:"输入 11 位演示手机号",confirm:"例如：是我本人"};
   $("utterance").placeholder = prompts[s?.intake_stage] || "输入消息";
 }
@@ -192,7 +193,7 @@ async function start(withVoice) {
   }
 }
 async function send(text) {
-  if (!snapshot || snapshot.closed || sent || !text.trim()) return;
+  if (!snapshot || snapshot.closed || snapshot.state === "HANDOFF" || transport?.finishing || sent || !text.trim()) return;
   sent = true;
   $("send").disabled = true;
   renderCancelActions(snapshot);
@@ -205,7 +206,7 @@ async function send(text) {
   } catch (e) { notify(e.message); }
   finally {
     sent = false;
-    $("send").disabled = !snapshot || snapshot.closed;
+    $("send").disabled = !snapshot || snapshot.closed || snapshot.state === "HANDOFF";
     renderCancelActions(snapshot);
   }
 }
@@ -519,6 +520,8 @@ class Voice {
     this.speaking = false;
     this.firstPlayTimer = null;
     this.closed = false;
+    this.finishing = false;
+    this.handoffEnded = false;
     this.readyAt = null;
     this.microphoneMuted = false;
     this.heardInput = false;
@@ -596,7 +599,8 @@ class Voice {
     };
     socket.onclose = () => {
       if (transport !== this || this.closed) return;
-      $("mic-status").textContent = "语音连接已结束，可重新连接或继续文字办理。";
+      $("mic-status").textContent = this.finishing ? "已登记人工，通话已结束。" :
+        "语音连接已结束，可重新连接或继续文字办理。";
       stopVoice(false);
     };
     const source = this.context.createMediaStreamSource(this.stream);
@@ -630,7 +634,7 @@ class Voice {
       renderDialer();
     }
     if (data.type === "failure") notify(data.message);
-    if (data.type === "asr_ended") {
+    if (data.type === "asr_ended" && !this.finishing) {
       $("mic-status").textContent = "识别已结束，可重新连接或改用文本。";
       stopVoice(false);
     }
@@ -638,6 +642,11 @@ class Voice {
       updatePartial(data.text ? "识别中 · " + data.text : "");
     }
     if (data.type === "state") refresh().catch((e) => notify(e.message));
+    if (data.type === "handoff") this.finishing = true;
+    if (data.type === "handoff_end") {
+      this.handoffEnded = true;
+      this.completeHandoff();
+    }
     if (data.type === "cut") {
       this.generation = data.generation;
       this.flush();
@@ -664,7 +673,11 @@ class Voice {
     source.connect(this.context.destination);
     const start = Math.max(this.next,this.context.currentTime + .035);
     this.sources.add(source);
-    source.onended = () => { source.disconnect(); this.sources.delete(source); };
+    source.onended = () => {
+      source.disconnect();
+      this.sources.delete(source);
+      this.completeHandoff();
+    };
     source.start(start);
     this.next = start + buffer.duration;
     if (sequence === 0 && this.endOfSpeech !== null) {
@@ -674,6 +687,12 @@ class Voice {
         (start-this.context.currentTime)*1000);
     }
   }
+  completeHandoff() {
+    if (!this.closed && this.handoffEnded && !this.sources.size) {
+      this.handoffEnded = false;
+      this.sendControl("handoff_played");
+    }
+  }
   timing(kind, ms) {
     if (ms >= 0) this.sendControl(JSON.stringify({type:"timing",kind,ms:Math.round(ms)}));
   }
@@ -681,6 +700,7 @@ class Voice {
     this.analyser.getFloatTimeDomainData(this.samples);
     const rms = Math.sqrt(this.samples.reduce((sum,x) => sum+x*x,0)/this.samples.length);
     this.updateMeter(rms);
+    if (this.finishing) return;
     if (rms > .025) {
       if (this.loudFrames++ === 0) this.onset = performance.now();
       if (this.loudFrames === 3) {

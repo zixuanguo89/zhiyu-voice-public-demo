@@ -13,6 +13,7 @@ BANK_CONFIRM = "我先问一下，这张卡是给您自己办的吗？回答“�
 BANK_CONFIRM_HELP = "想确认这张卡是不是给您自己办。如果是，直接回答“是”就可以了。"
 BANK_CONFIRM_FALLBACK = "这句我还没确认清楚。您可以再说一声“是”，也可以点电话页的“改用文字交谈”，输入“我是本人”。"
 BANK_CHECKING = "稍等一下，我还在查这笔预约的结果。有结果我再跟您说，您也可以转人工。"
+BANK_HANDOFF = "好的，稍后由人工客服与您对接"
 BANK_NO_MATCH = "目前没有这个时段。您可以换个工作日下午，也可以说‘转人工’，我帮您登记。"
 BANK_ASK_PREFERENCE = "那您哪天下午方便？大概几点也行，我帮您查。"
 DECLINED_TIMES = re.compile(
@@ -146,9 +147,15 @@ def bank_cancellation(words):
 
 def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slots=None):
     action, target = parse(text, available)
-    if action in {"handoff", "refuse"}:
+    if action == "refuse":
         return action, target
     words = bank_words(text)
+    if re.search(r"(?:不用|不要|不想|不需要|不是要|别|不)(?:再|先)?(?:帮我|给我)?(?:转|找|接)?(?:人工|真人)", words):
+        return "hold", None
+    if action == "handoff" or re.search(
+            r"(?:跟|和|找|转|接|叫|要|请)(?:个)?(?:人工客服|真人)|"
+            r"(?:人工客服|真人客服).{0,5}(?:跟我联系|联系我|回电)", words):
+        return "handoff", None
     declined = DECLINED_TIMES.search(words)
     if declined:
         return "decline_times", words[declined.end():]
@@ -157,8 +164,6 @@ def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slo
         return "off_topic", detour
     if action == "continue":
         return action, target
-    if re.search(r"(?:跟|和|找|转)(?:个)?真人", words):
-        return "handoff", None
     cancellation = bank_cancellation(words)
     if cancellation:
         return cancellation, None

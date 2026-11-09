@@ -8,7 +8,7 @@ from datetime import datetime
 
 from services.business import Rejection, Unknown, ZONE
 from services.bank import (BANK_APPOINTMENT, BANK_ASK_PREFERENCE, BANK_BRANCH, BANK_CHECKING, BANK_CONFIRM,
-                           BANK_CONFIRM_FALLBACK, BANK_CONFIRM_HELP, BANK_DETOUR, BANK_FAQ, BANK_NO_MATCH,
+                           BANK_CONFIRM_FALLBACK, BANK_CONFIRM_HELP, BANK_DETOUR, BANK_FAQ, BANK_HANDOFF, BANK_NO_MATCH,
                            BANK_OPENING, BANK_SCENARIO, bank_availability,
                            bank_intent, bank_slot_offer, bank_slot_time, bank_space, bank_topics, bank_words, is_bank_space)
 from services.bank_time import slot_matches
@@ -154,7 +154,8 @@ class Conversation:
             return {"session_id": session, "state": row["state"], "turn": row["turn"],
                     "scenario": json.loads(row["fault"]).get("scenario"),
                     "intake_stage": intake_stage(intake) if intake and not scope else None,
-                    "policy": row["policy"], "verified": bool(scope), "reply": row["reply"] if scope or not row["scope"]
+                    "policy": row["policy"], "verified": bool(scope),
+                    "reply": row["reply"] if scope or not row["scope"] or row["state"] in {"HANDOFF", "CLOSED"}
                     else "身份核验已过期，请重新核验。", "appointment": appointment,
                     "slots": slots, "closed": bool(row["closed"]), "pending": pending["state"] if pending else None,
                     "offer": json.loads(confirmation["params"]) if authorized else None,
@@ -170,7 +171,7 @@ class Conversation:
                 if seen["session"] != session:
                     raise Rejection("INVALID_ARGUMENT")
                 return False
-            if row["closed"]:
+            if row["closed"] or (row["state"] == "HANDOFF" and is_bank_space(self._space(row))):
                 raise Rejection("SESSION_CLOSED")
             if expected_turn is not None and expected_turn != row["turn"]:
                 return False
@@ -235,6 +236,9 @@ class Conversation:
             action, target = "off_topic", BANK_DETOUR
         detour = target if action == "off_topic" and reliable else ""
         if action == "handoff":
+            if bank and not reliable:
+                self._say(db, row, "刚才没听清，您是想转人工吗？请再说一遍。")
+                return
             self._invalidate(db, row, "HANDOFF")
             pending = self._pending(db, session)
             latest = db.execute("SELECT state,receipt FROM operations WHERE session=? ORDER BY rowid DESC LIMIT 1",
@@ -247,8 +251,7 @@ class Conversation:
             })
             emit(db, session, row["turn"], "handoff.created", result)
             if bank:
-                detail = "刚才那笔预约还在核对，我也一并备注了。" if pending else ""
-                reply = f"好，我已经把您的情况登记给人工客服了。{detail}"
+                reply = BANK_HANDOFF
             else:
                 detail = "预约操作结果仍待核实。" if pending else ""
                 reply = f'已登记人工工单 {result["ticket"]}。{detail}'

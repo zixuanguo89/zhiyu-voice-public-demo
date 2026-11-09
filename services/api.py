@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.websockets import WebSocketState
 
+from services.bank import BANK_SCENARIO
 from services.business import Rejection, Sandbox
 from services.config import Settings
 from services.desk import CallDesk, desk_key
@@ -111,6 +112,8 @@ def create_app(settings=None):
                         await call.close()
                         if calls.get(session) is call:
                             calls.pop(session, None)
+                    elif snap["state"] == "HANDOFF" and snap["scenario"] == BANK_SCENARIO:
+                        call.begin_handoff(snap)
                     else:
                         call.follow_up(snap)
             except Exception as exc:
@@ -223,13 +226,20 @@ def create_app(settings=None):
     @app.post("/api/sessions/{session}/turns")
     async def turn(session: str, body: Turn, authorization: Auth = None):
         authorize(session, authorization)
-        if settings.public_demo and conversation.snapshot(session)["turn"] >= 40:
-            raise Rejection("RATE_LIMITED")
         public_limit("text", 240)
-        if session in calls:
-            calls[session].cut()
+        call = calls.get(session)
+        if call and not call.finishing:
+            call.cut()
         processed = await submit_text(conversation, language, session, body.text, body.event_id, body.expected_turn)
-        return {"processed": processed, "snapshot": conversation.snapshot(session)}
+        snapshot = conversation.snapshot(session)
+        if processed and snapshot["scenario"] == BANK_SCENARIO and snapshot["state"] == "HANDOFF":
+            if call and not call.closed and call.browser_ready and call.asr_ready:
+                call.begin_handoff(snapshot)
+            else:
+                conversation.close(session)
+                save_report(conversation, session)
+                snapshot = conversation.snapshot(session)
+        return {"processed": processed, "snapshot": snapshot}
 
     @app.post("/api/sessions/{session}/demo-verification")
     async def demo_verification(session: str, authorization: Auth = None):

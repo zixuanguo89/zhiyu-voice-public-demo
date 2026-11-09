@@ -13,6 +13,7 @@ from services.business import Rejection, ZONE
 from services.bank import BANK_INTENT_HINT, BANK_SCENARIO, bank_intent
 from services.dialogue import parse, redacted
 from services.providers import ProviderError, recognize, synthesize
+from services.quality import save_report
 from services.storage import emit
 
 
@@ -61,6 +62,8 @@ class VoiceCall:
         self.browser_ready = False
         self.asr_ready = False
         self.closed = False
+        self.finishing = False
+        self.handoff_played = asyncio.Event()
         self.segment = 0
 
     def spawn(self, coroutine):
@@ -70,7 +73,9 @@ class VoiceCall:
         return task
 
     def control(self, value):
-        if value == "barge":
+        if value == "handoff_played" and self.finishing:
+            self.handoff_played.set()
+        elif value == "barge" and not self.finishing:
             self.cut()
         elif value == "ready":
             self.browser_ready = True
@@ -128,7 +133,7 @@ class VoiceCall:
                 self.reply_task = self.spawn(self.speak(snap["reply"], 0, self.generation))
 
     async def on_text(self, text, stable, reliable):
-        if self.closed:
+        if self.closed or self.finishing:
             return
         try:
             self.conversation.auth(self.session, self.token)
@@ -151,19 +156,39 @@ class VoiceCall:
 
     async def answer(self, text, reliable, turn, generation):
         try:
-            if getattr(self.settings, "public_demo", False) and turn >= 40:
-                self.send({"type": "failure", "message": "这通演示已达到对话轮次上限。"})
-                return
             processed = await submit_text(self.conversation, self.language, self.session, text,
                                           expected_turn=turn, reliable=reliable)
             if processed and generation == self.generation:
                 snap = self.conversation.snapshot(self.session)
+                if snap["state"] == "HANDOFF" and snap["scenario"] == BANK_SCENARIO:
+                    self.begin_handoff(snap)
+                    return
                 if snap["pending"]:
                     self.pending_reply = (snap["turn"], generation)
                 self.send({"type": "state"})
                 await self.speak(snap["reply"], snap["turn"], generation)
         except Rejection:
             self.send({"type": "failure", "message": "会话已关闭或失效，请开始新的模拟通话。"})
+
+    def begin_handoff(self, snapshot):
+        if self.finishing:
+            return
+        self.finishing = True
+        self.pending_reply = None
+        self.reply_task = self.spawn(self.finish_handoff(snapshot))
+
+    async def finish_handoff(self, snapshot):
+        try:
+            self.send({"type": "handoff"})
+            self.send({"type": "state"})
+            await self.speak(snapshot["reply"], snapshot["turn"], self.generation)
+            self.send({"type": "handoff_end"})
+            try:
+                await asyncio.wait_for(self.handoff_played.wait(), 15)
+            except TimeoutError:
+                pass
+        finally:
+            await self.close()
 
     def follow_up(self, snapshot):
         if self.pending_reply == (snapshot["turn"], self.generation) and not snapshot["pending"]:
@@ -202,6 +227,10 @@ class VoiceCall:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        snapshot = self.conversation.snapshot(self.session)
+        if snapshot["state"] == "HANDOFF" and snapshot["scenario"] == BANK_SCENARIO:
+            self.conversation.close(self.session)
+            save_report(self.conversation, self.session)
 
 
 class MediaCall(VoiceCall):

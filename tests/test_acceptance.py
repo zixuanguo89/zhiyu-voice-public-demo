@@ -592,8 +592,14 @@ class Cases(unittest.TestCase):
             await audio.get()
             await on_text("我叫林小满", True, True)
             await audio.get()
+            await on_text("请帮我找个人工客服", True, True)
+            await audio.get()
 
-        with patch("services.media.recognize", recognize), TestClient(app, base_url=site) as client:
+        async def synthesize(_provider, _voice, _text):
+            yield bytes(960)
+
+        with (patch("services.media.recognize", recognize), patch("services.media.synthesize", synthesize),
+              TestClient(app, base_url=site) as client):
             options = {"scenario": "bank_card", "customer_intake": True}
             active = client.post("/api/sessions", json=options, headers=desk).json()
             inactive = client.post("/api/sessions", json=options, headers=desk).json()
@@ -615,12 +621,46 @@ class Cases(unittest.TestCase):
                     if socket.receive_json()["type"] == "state":
                         break
                 self.assertEqual(client.get(path, headers=auth).json()["intake_stage"], "phone")
-                self.assertEqual(client.post(path + "/close", headers=auth).status_code, 200)
+                socket.send_bytes(bytes(1280))
+                for _ in range(16):
+                    frame = socket.receive()
+                    if frame.get("text") and json.loads(frame["text"])["type"] == "handoff_end":
+                        break
+                else:
+                    self.fail("Handoff playback did not finish")
+                ending = client.get(path, headers=auth).json()
+                self.assertEqual(ending["reply"], "好的，稍后由人工客服与您对接")
+                self.assertEqual(ending["state"], "HANDOFF")
+                self.assertFalse(ending["closed"])
+                socket.send_text("handoff_played")
                 for _ in range(6):
                     frame = socket.receive()
                     if frame["type"] == "websocket.close":
                         break
                 self.assertEqual(frame["type"], "websocket.close")
+            self.assertTrue(client.get(path, headers=auth).json()["closed"])
+            self.assertEqual(client.get(path + "/result", headers=auth).json()["status"], "handed_off")
+
+    def test_public_text_handoff_closes_after_more_than_forty_turns(self):
+        config = self.settings()
+        config.public_demo = True
+        desk = {"X-Desk-Token": "desk_" + "c" * 64}
+        with TestClient(create_app(config)) as client:
+            opened = client.post("/api/sessions", headers=desk,
+                                 json={"scenario": "bank_card", "customer_intake": True}).json()
+            path = "/api/sessions/" + opened["session_id"]
+            auth = {"Authorization": "Bearer " + opened["token"]}
+            for index, words in enumerate(["等一下"] * 41 + ["不用转人工", "请人工客服联系我"]):
+                response = client.post(path + "/turns", headers=auth,
+                                       json={"text": words, "expected_turn": index, "event_id": ident("evt")})
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.json()["processed"])
+            closed = response.json()["snapshot"]
+            self.assertTrue(closed["closed"])
+            self.assertEqual(closed["reply"], "好的，稍后由人工客服与您对接")
+            self.assertEqual(closed["turn"], 43)
+            self.assertEqual(client.get(path + "/result", headers=auth).json()["status"], "handed_off")
+            self.assertEqual(len(client.get("/api/desk/booking", headers=desk).json()["handoffs"]), 1)
 
     def test_bank_understands_natural_identity_answers(self):
         desk = "desk_" + "e" * 64
