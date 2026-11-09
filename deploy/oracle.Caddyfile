@@ -1,0 +1,8 @@
+https://{$ZHIYU_PUBLIC_HOST} {
+	tls {
+		issuer acme https://acme-v02.api.letsencrypt.org/directory {
+			profile shortlived
+		}
+	}
+	reverse_proxy app:8765
+}

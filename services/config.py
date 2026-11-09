@@ -21,6 +21,7 @@ class Settings:
         self.host = env.get("HOST", "127.0.0.1")
         self.port = int(env.get("PORT", "8765"))
         self.public_demo = env.get("PUBLIC_DEMO", "0") == "1"
+        self.persistent_storage = env.get("PERSISTENT_STORAGE", "0") == "1"
         self.admin = env.get("ADMIN_TOKEN") or secrets.token_urlsafe(32)
         self.ephemeral_admin = not self.public_demo and not env.get("ADMIN_TOKEN")
         self.artifacts = Path(env.get("ARTIFACT_DIR", "artifacts"))

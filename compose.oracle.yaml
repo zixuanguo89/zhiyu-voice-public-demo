@@ -1,0 +1,38 @@
+name: zhiyu-oracle
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      PUBLIC_DEMO: "1"
+      PERSISTENT_STORAGE: "1"
+      ARTIFACT_DIR: /data
+      ASR_PROVIDER: dashscope
+      TTS_PROVIDER: dashscope
+      LLM_PROVIDER: dashscope
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?Set the server-side DashScope key}
+    volumes:
+      - appointments:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  proxy:
+    image: caddy:2.11-alpine
+    restart: unless-stopped
+    environment:
+      ZHIYU_PUBLIC_HOST: ${ZHIYU_PUBLIC_HOST:?Set the cloud instance public address}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/oracle.Caddyfile:/etc/caddy/Caddyfile:ro
+      - certificates:/data
+
+volumes:
+  appointments:
+  certificates:

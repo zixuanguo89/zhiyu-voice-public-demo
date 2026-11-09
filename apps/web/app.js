@@ -790,6 +790,9 @@ async function init() {
     if (features.public_demo) {
       document.querySelector(".strategy-panel").hidden = true;
       $("public-notice").hidden = false;
+      if (features.persistent_storage) {
+        $("public-notice").textContent = "公网演示请用虚构资料。预约和通话记录保存在云端，同一浏览器可再次查看。";
+      }
     }
     $("mic-status").textContent = features.microphone ? "可开启麦克风进行语音通话。" : "云语音待配置，当前可使用文本。";
     if (credential) {

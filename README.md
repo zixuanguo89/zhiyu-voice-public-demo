@@ -44,6 +44,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 
 在托管平台的服务变量中配置语音提供商、模型和密钥。语音密钥由服务端读取。上传源码时只使用部署包中的文件，本地配置和既有记录留在本机。上线后先访问 `/health` 确认 `public_demo` 和 `microphone` 都为 `true`，再用实际公网地址开启麦克风做一次端到端验收。
 
+### Oracle 云主机部署
+
+在云主机安装 Docker 和 Compose，放行公网 TCP 80 和 443。将 `ZHIYU_PUBLIC_HOST`（公网 IP 或域名）和 `DASHSCOPE_API_KEY` 写入服务器上的私有环境文件，再从项目根目录运行以下命令。
+
+```bash
+docker compose --env-file /path/to/private.env -f compose.oracle.yaml up -d --build
+```
+
+浏览器通过 HTTPS 打开公网地址，代理自动申请并续期证书。预约与通话数据库保存在 `appointments` 数据卷中，重新构建容器和重启主机后仍可读取。备份时应一起保存该数据卷内的两份 SQLite 数据库。通过 `/health` 确认 `persistent_storage`、`public_demo` 和 `microphone` 均为 `true`。
+
 ## 运行验收
 
 ```powershell

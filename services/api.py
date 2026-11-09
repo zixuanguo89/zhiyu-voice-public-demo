@@ -175,6 +175,7 @@ def create_app(settings=None):
         with conversation.business.store.tx() as db:
             db.execute("SELECT 1 FROM appointments LIMIT 1").fetchone()
         return {"status": "ok", "business": "mock", "microphone": settings.audio, "demo_faults": settings.demo,
+                "persistent_storage": settings.persistent_storage,
                 "public_demo": settings.public_demo, "voice_transport": "websocket" if settings.public_demo else "webrtc",
                 "providers": {k: {"mode": v[0], "model": v[2] if v[0] == "dashscope" else None}
                               for k, v in settings.providers.items()}}
