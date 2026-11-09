@@ -29,7 +29,7 @@ def conversation_script(scenario):
     day = today + timedelta(days=1)
     while day.weekday() >= 5:
         day += timedelta(days=1)
-    spoken_date = f"{day.month}月{day.day}号"
+    spoken_date = "明天" if day == today + timedelta(days=1) else "周一"
     slot = f"S{day:%Y%m%d}1530"
     date_request = f"{spoken_date}下午三点半有空吗？"
     if scenario == "cancel":
