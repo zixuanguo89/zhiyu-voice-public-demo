@@ -7,12 +7,12 @@ import time
 from datetime import datetime
 
 from services.business import Rejection, Unknown, ZONE
-from services.bank import (BANK_APPOINTMENT, BANK_ASK_PREFERENCE, BANK_BRANCH, BANK_CHECKING, BANK_CONFIRM,
+from services.bank import (BANK_AFTERNOON_WINDOW, BANK_APPOINTMENT, BANK_ASK_PREFERENCE, BANK_BRANCH, BANK_CHECKING, BANK_CONFIRM,
                            BANK_CONFIRM_FALLBACK, BANK_CONFIRM_HELP, BANK_DETOUR, BANK_FAQ, BANK_HANDOFF,
-                           BANK_HANDOFF_QUESTION, BANK_NO_MATCH, BANK_OPENING, BANK_SCENARIO, BANK_TIME_OR_HANDOFF,
+                           BANK_HANDOFF_QUESTION, BANK_NO_MATCH, BANK_OPENING, BANK_SCENARIO, BANK_TIME_OR_HANDOFF, BANK_WEEKDAY_WINDOW,
                            bank_availability, bank_intent, bank_list_reference, bank_short_answer, bank_slot_offer, bank_slot_time,
                            bank_space, bank_topics, bank_words, is_bank_space)
-from services.bank_time import slot_matches
+from services.bank_time import has_calendar_day, slot_matches
 from services.dialogue import (BASELINE, OPENING, POLICY_ID, SPOKEN_OPENING, SPOKEN_RETRY,
                                canonical_ids, denies_spoken_identity, parse, redacted, slot_label, spoken_identity)
 from services.customer import (CUSTOMER_OPENING, NAME_PROMPT, PHONE_PROMPT, customer_name, customer_phone,
@@ -95,6 +95,15 @@ class Conversation:
         reply = db.execute("""SELECT payload FROM events WHERE session=? AND type='assistant.replied'
                               ORDER BY sequence DESC LIMIT 1""", (session,)).fetchone()
         return json.loads(reply[0]) if reply else {}
+
+    def _bank_window(self, db, row, slots, lead="", *, general=False):
+        if not slots:
+            self._say(db, row, lead + BANK_NO_MATCH, "OFFERING", question="time_or_handoff")
+        elif not general and len({slot["start"][:10] for slot in slots}) == 1:
+            self._say(db, row, lead + BANK_AFTERNOON_WINDOW, "OFFERING", question="time_preference",
+                      preference_slots=[slot["id"] for slot in slots])
+        else:
+            self._say(db, row, lead + BANK_WEEKDAY_WINDOW, "OFFERING", question="day_preference")
 
     def _bank_guidance(self, db, row, topics):
         for topic in topics:
@@ -369,7 +378,10 @@ class Conversation:
             reply = BANK_CHECKING if bank else "上一项操作已发出，结果仍待核实。核对后才能办理新的变更。"
             self._say(db, row, detour + reply, "RECONCILING")
             return
+        rolling = bank and scope.startswith("C")
         choice_ids = previous.get("slot_options", [])
+        preference = {key: previous[key] for key in ("question", "preference_slots")
+                      if key in previous and question in {"day_preference", "time_preference"}}
         if detour:
             if row["confirmation"] and self._bank_restate(db, row, f"{detour}回到刚才的预约。"):
                 return
@@ -377,14 +389,19 @@ class Conversation:
                 next_step = "刚才那笔预约已经处理好了。您还想核对办理结果吗？"
             elif row["state"] == "HANDOFF":
                 next_step = "刚才已经帮您登记给人工客服了。您还有预约方面的问题吗？"
+            elif question == "time_preference":
+                next_step = BANK_AFTERNOON_WINDOW
+            elif question == "day_preference":
+                next_step = BANK_WEEKDAY_WINDOW
             elif row["state"] == "OFFERING":
                 next_step = "咱们接着看办卡时间。您想选哪个时段？"
             else:
                 next_step = "咱们接着说办卡预约。您想查一下时间，还是先问问需要带什么？"
-            self._say(db, row, detour + next_step, slot_options=choice_ids)
+            self._say(db, row, detour + next_step, slot_options=choice_ids, **preference)
             return
         if action == "continue":
-            links = {key: previous[key] for key in ("operation_id", "receipt_id", "confirmation_id", "slot_options", "question")
+            links = {key: previous[key] for key in ("operation_id", "receipt_id", "confirmation_id", "slot_options",
+                                                   "question", "preference_slots")
                      if key in previous}
             self._say(db, row, row["reply"], **links)
             return
@@ -407,13 +424,19 @@ class Conversation:
                           conversational=action == "agree")
             return
         if action == "bank_faq":
-            self._say(db, row, self._bank_guidance(db, row, target), slot_options=choice_ids)
+            self._say(db, row, self._bank_guidance(db, row, target), slot_options=choice_ids, **preference)
             return
         if action == "courtesy":
             self._say(db, row, "不客气。您还有什么想问的吗？")
             return
         if action == "hold":
-            self._say(db, row, "好，您慢慢看。想好了，再告诉我您要约哪个时间。", slot_options=choice_ids)
+            self._say(db, row, "好，您慢慢看。想好了，再告诉我您要约哪个时间。", slot_options=choice_ids,
+                      **preference)
+            return
+        if rolling and not choice_ids and re.fullmatch(
+                r"(?:我选|就选|就|选)?第[一二两三四1234](?:个|项)?吧?", bank_words(text)):
+            prompt = BANK_AFTERNOON_WINDOW if question == "time_preference" else BANK_ASK_PREFERENCE
+            self._say(db, row, prompt, "OFFERING", **preference)
             return
         if action in {"change_request", "clarify_choice"}:
             self._invalidate(db, row, "INTENT_CHANGED")
@@ -441,9 +464,17 @@ class Conversation:
                      not (current["status"] == "active" and s["id"] == current["slot"])]
         current_slot = next((s for s in slots if s["id"] == current["slot"]), None)
         active_slot = current_slot if current["status"] == "active" else None
-        ordinal_slots = [{"id": slot_id} for slot_id in choice_ids] if choice_ids else None
-        action, target = (bank_intent(text, available, active_slot, today=today, ordinal_slots=ordinal_slots)
+        ordinal_slots = [{"id": slot_id} for slot_id in choice_ids] if choice_ids or rolling else None
+        keep_day = rolling and question == "time_preference" and not has_calendar_day(text)
+        preferred_ids = previous.get("preference_slots", [])
+        matching_slots = [slot for slot in available if slot["id"] in preferred_ids] if keep_day else available
+        action, target = (bank_intent(text, matching_slots, active_slot, today=today, ordinal_slots=ordinal_slots)
                           if bank else parse(text, slots))
+        if keep_day and re.fullmatch(r"(?:偏)?[早晚](?:些|点)?[啊吧]?", bank_words(text)):
+            action, target = "relative_time", -1 if "早" in text else 1
+        if rolling and reliable and question in {"day_preference", "time_preference"} and re.fullmatch(
+                r"(?:都行|都可以|哪天都行|哪天都可以|随便|你安排吧|您安排吧|挑个有空的)", bank_words(text)):
+            action, target = ("choose", matching_slots[0]["id"]) if matching_slots else ("ask_time", ())
         if action == "off_topic":
             action, target = "unrecognized", None
         if action == "decline_times":
@@ -453,8 +484,12 @@ class Conversation:
             self._invalidate(db, row, "TIMES_DECLINED")
             matches = slot_matches(target, available, today) if target and not re.search(
                 r"没空|没时间|不方便|不行|不了|不要|不选|不约", target) else None
-            options = [slot for slot in available if matches and slot["id"] in matches][:4]
+            options = [slot for slot in available if matches and slot["id"] in matches]
             lead = "好，原来的预约先给您保留。" if active_slot else "行，咱们换个时间。"
+            if rolling and matches is not None:
+                self._bank_window(db, row, options, lead)
+                return
+            options = options[:4]
             reply = (BANK_ASK_PREFERENCE if matches is None else
                      bank_availability(options) if options else BANK_NO_MATCH)
             self._say(db, row, lead + reply, "OFFERING", slot_options=[slot["id"] for slot in options],
@@ -484,10 +519,12 @@ class Conversation:
                                  (row["confirmation"], self.clock())).fetchone()
             anchor = json.loads(offered["params"]).get("target_start") if offered else None
             anchor = anchor or (active_slot["start"] if active_slot else None)
-            if not anchor:
+            if keep_day:
+                nearest = next(iter(matching_slots if target < 0 else reversed(matching_slots)), None)
+            elif not anchor:
                 self._say(db, row, "您想比哪个时间早一点或晚一点？告诉我日期或第几个就行。")
                 return
-            if target < 0:
+            elif target < 0:
                 nearest = next((slot for slot in reversed(available) if slot["start"] < anchor), None)
             else:
                 nearest = next((slot for slot in available if slot["start"] > anchor), None)
@@ -512,7 +549,11 @@ class Conversation:
                     if bank and action in {"ask_time", "lookup_time", "choose"} else "")
         if action == "lookup_time":
             options = [slot for slot in slots if slot["id"] in target and
-                       (slot["available"] or slot == active_slot)][:4]
+                       (slot["available"] or slot == active_slot)]
+            if rolling and len({slot["start"][:10] for slot in options}) > 1:
+                self._bank_window(db, row, options, guidance)
+                return
+            options = options[:4]
             times = "、".join(map(bank_slot_time, options))
             reply = f"可以参考{times}。我先只帮您查时间。" if times else BANK_NO_MATCH
             self._say(db, row, guidance + reply, "OFFERING", slot_options=[slot["id"] for slot in options],
@@ -523,8 +564,13 @@ class Conversation:
                 self._say(db, row, f"{guidance}您约的是{bank_slot_time(active_slot)}。预约编号是 {appt}。", "OFFERING")
                 return
             if len(target) != 1:
-                options = [slot for slot in available if slot["id"] in target][:4]
-                reply = bank_availability(options) if options else BANK_NO_MATCH
+                options = [slot for slot in available if slot["id"] in target]
+                if rolling and not (options and len({slot["start"][:10] for slot in options}) == 1
+                                    and re.search(r"几点|具体时段|具体时间", text)):
+                    self._bank_window(db, row, options, guidance)
+                    return
+                options = options[:4]
+                reply = bank_availability(options, include_date=not rolling) if options else BANK_NO_MATCH
                 self._say(db, row, guidance + reply, "OFFERING", slot_options=[slot["id"] for slot in options],
                           question="time" if options else "time_or_handoff")
                 return
@@ -535,6 +581,9 @@ class Conversation:
             status = "已取消" if current["status"] == "canceled" else "有效"
             emit(db, session, row["turn"], "appointment.read", {"appointment": current, "slots": available})
             if bank:
+                if rolling and action == "query":
+                    self._bank_window(db, row, available, general=True)
+                    return
                 if current["status"] == "active":
                     lead = "这笔预约还没有取消。" if action == "cancel_status" else ""
                     intro = f"{lead}您约的是{bank_slot_time(current_slot)}，预约编号 {appt}。"

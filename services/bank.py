@@ -18,6 +18,8 @@ BANK_HANDOFF_QUESTION = "要我帮您转人工吗？"
 BANK_TIME_OR_HANDOFF = "您想再换个时间，还是我帮您转人工？"
 BANK_NO_MATCH = "目前没有这个时段。您可以换个工作日下午，也可以说‘转人工’，我帮您登记。"
 BANK_ASK_PREFERENCE = "那您哪天下午方便？大概几点也行，我帮您查。"
+BANK_WEEKDAY_WINDOW = "办卡可以约在工作日下午两点到五点，每半小时一档。您一般周几方便？"
+BANK_AFTERNOON_WINDOW = "那天下午还有空位。您想约早一点还是晚一点？也可以直接说几点。"
 DECLINED_TIMES = re.compile(
     r"(?:都|全|一个也)(?:没(?:有)?(?:时间|空)|不(?:行|合适|方便|太方便)|来不了|去不了|赶不上|对不上)"
     r"|(?:这些|这几个|刚才(?:说|报)的)(?:时间|时段)(?:我)?(?:没(?:有)?(?:时间|空)|不方便|不合适)"
@@ -61,15 +63,21 @@ def is_bank_space(space):
 
 def bank_slot_time(slot):
     time = datetime.fromisoformat(slot["start"])
+    return f"{time.month}月{time.day}号{bank_slot_hour(slot)}"
+
+
+def bank_slot_hour(slot):
+    time = datetime.fromisoformat(slot["start"])
     period = "上午" if time.hour < 12 else "下午"
     minutes = "半" if time.minute == 30 else f"{time.minute}分" if time.minute else ""
-    return f"{time.month}月{time.day}号{period}{time.hour % 12 or 12}点{minutes}"
+    return f"{period}{time.hour % 12 or 12}点{minutes}"
 
 
-def bank_availability(slots):
+def bank_availability(slots, *, include_date=True):
     if not slots:
         return "目前没有可约的时段。您需要的话，我可以帮您转人工。"
-    options = [f"第{number}个是{bank_slot_time(slot)}" for number, slot in enumerate(slots, 1)]
+    label = bank_slot_time if include_date else bank_slot_hour
+    options = [f"第{number}个是{label(slot)}" for number, slot in enumerate(slots, 1)]
     return "我看看啊，现在还有这些时间。" + "。".join(options) + "。您看哪个方便？"
 
 
@@ -311,6 +319,9 @@ def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slo
         return "recap_time", None
     if any(term in text for term in ("再说一遍", "重复一遍", "刚才没听清")):
         return ("recap_time" if re.search(r"时间|时段", text) else "continue"), None
+    if re.search(r"(?:平时)?(?:什么时候|什么时段|哪天|周几|星期几).{0,8}(?:能办|可以办|能约|可以约)|"
+                 r"(?:几点到几点|开放时间|营业时间|有哪些(?:可约的)?时间)", words):
+        return "query", None
     if action in {"unrecognized", "clarify"} and (
         any(term in text.lower() for term in ("借记卡", "储蓄卡", "办卡", "开卡", "到店", "visa", "预约"))
         or re.search(r"(?:办(?:理)?|申请|开)\s*(?:一?张\s*)?(?:vi[az]\s*)?卡", text, re.IGNORECASE)

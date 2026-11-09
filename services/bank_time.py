@@ -13,6 +13,11 @@ RELATIVE = {"今天": 0, "明天": 1, "后天": 2, "大后天": 3, "昨天": -1}
 CLOCK = re.compile(rf"({NUMBER})(?:[:：](\d{{2}})|点(?:钟|整|半|{NUMBER}分?)?)")
 
 
+def has_calendar_day(text):
+    return bool(DATE.search(text) or WEEKDAY.search(text) or WEEK_RANGE.search(text)
+                or any(word in text for word in (*RELATIVE, "工作日", "平日", "周末")))
+
+
 def number(text):
     if text.isdecimal():
         return int(text)

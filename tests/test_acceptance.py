@@ -506,7 +506,7 @@ class Cases(unittest.TestCase):
             verified = a("是我本人")
             self.assertTrue(verified["verified"])
             first_slot, second_slot = [s["id"] for s in verified["slots"][:2]]
-            self.assertEqual(a("我选第一个")["offer"]["target_slot"], first_slot)
+            self.assertEqual(a("哪天都行")["offer"]["target_slot"], first_slot)
             first = a("确认预约")["appointment"]["id"]
             trail = client.get(path + "/events", headers=auth).json()
             self.assertNotIn(phone, json.dumps(trail, ensure_ascii=False))
@@ -544,20 +544,29 @@ class Cases(unittest.TestCase):
         desk = "desk_" + "e" * 64
         session, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
         state = self.say(session, "我叫林小满，手机号19900000991", "是我本人")
+        self.assertIn("工作日下午两点到五点", state["reply"])
+        self.assertNotRegex(state["reply"], r"\d+月|第\d+个")
         starts = [datetime.fromisoformat(slot["start"]) for slot in state["slots"]]
         self.assertEqual(len(starts), 57)
         self.assertTrue(all(when.weekday() < 5 and 14 <= when.hour < 17 and when.minute in (0, 30)
                             for when in starts))
         self.assertEqual(starts[0].isoformat(), "2026-11-09T15:30:00+08:00")
         self.assertEqual(starts[-1].day, 20)
-        self.assertEqual(self.say(session, "我选第一个")["offer"]["target_start"], starts[0].isoformat())
+        self.assertEqual(self.say(session, "哪天都行")["offer"]["target_start"], starts[0].isoformat())
         declined = self.say(session, "这几个时间我都没空")
         self.assertIn("哪天下午方便", declined["reply"])
         self.assertIsNone(declined["offer"])
         self.assertEqual(self.say(session, "可以")["appointment"]["status"], "unbooked")
         self.assertIn("转人工", self.say(session, "周六下午有空吗")["reply"])
-        self.assertIn("11月16号", self.say(session, "这些时间都不合适，下周的工作日下午呢")["reply"])
-        offer = self.say(session, "下周二下午三点半有空吗")["offer"]
+        broad = self.say(session, "这些时间都不合适，下周的工作日下午呢")
+        self.assertIn("周几方便", broad["reply"])
+        self.assertNotRegex(broad["reply"], r"\d+月|第\d+个")
+        day = self.say(session, "下周二下午")
+        self.assertIn("早一点还是晚一点", day["reply"])
+        self.assertNotRegex(day["reply"], r"\d+月|第\d+个")
+        self.assertIsNone(day["offer"])
+        self.say(session, "到店带什么材料")
+        offer = self.say(session, "三点半")["offer"]
         self.assertEqual(offer["target_start"], "2026-11-17T15:30:00+08:00")
         booked = self.say(session, "就这个时间吧")["appointment"]
         self.assertEqual(booked["slot"], offer["target_slot"])
@@ -573,7 +582,7 @@ class Cases(unittest.TestCase):
         reopened, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
         state = self.say(reopened, "我叫林小满，手机号19900000991", "是我本人")
         self.assertEqual(state["appointment"], booked)
-        self.assertIn("11月17号下午3点半", state["reply"])
+        self.assertIn("11月17号下午3点半", self.say(reopened, "我的预约是什么时间")["reply"])
         active_slot = next(slot for slot in state["slots"] if slot["id"] == booked["slot"])
         self.assertFalse(active_slot["available"])
         self.assertTrue(any(slot["start"].startswith("2026-12-04") for slot in state["slots"]))
@@ -597,6 +606,7 @@ class Cases(unittest.TestCase):
         self.assertFalse(self.call.snapshot(session)["verified"])
         self.assertTrue(self.say(session, "刚才说反了，是我本人")["verified"])
         self.assertIsNone(self.say(session, "就那个")["offer"])
+        self.say(session, "下周二下午具体几点")
         offered = self.say(session, "第二")
         self.assertIsNotNone(offered["offer"])
         self.say(session, "到店带什么材料？")
@@ -623,7 +633,8 @@ class Cases(unittest.TestCase):
         self.assertIn("林小雨", self.say(session, "林小雨")["reply"])
         state = self.say(session, "对啊")
         self.assertTrue(state["verified"])
-        menu = [slot["id"] for slot in state["slots"] if slot["available"]][:4]
+        self.say(session, "下周二下午具体几点")
+        menu = self.call.intent_context(session)["offered_slots"]
         self.assertGreater(len(menu), 2)
         self.assertIsNone(self.say(session, "后面那个")["offer"])
         offer = self.say(session, "最后那个")["offer"]

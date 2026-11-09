@@ -14,7 +14,7 @@ async def recognize(_provider, queue, on_text, on_ready=None):
     if on_ready:
         on_ready()
     script = ["我叫林小满", "手机号是19900000991", "我是本人，我想预约办理 Visa 借记卡",
-              "我选第一个可用时段", "改成第二个时段", "确认预约"]
+              "哪天都行", "再晚一点", "确认预约"]
     for utterance in script:
         # Require incoming RTP media before advancing. The mock transcript is predefined.
         for _ in range(38):

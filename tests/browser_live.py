@@ -35,11 +35,11 @@ def conversation_script(scenario):
     if scenario == "cancel":
         return slot, "下午3点半", intake + ("我不想办了，你帮我把这个预约取消掉吧。", "取消了吗？", "确认取消。")
     scripts = {
-        "date": (slot, "下午3点半", ("我选第一个可用时段。", "这些时间我都没空。", date_request,
+        "date": (slot, "下午3点半", (f"{spoken_date}下午方便。", "晚一点吧。", "这些时间我都没空。", date_request,
                                    "对了，明天会下雨吗？", "嗯，可以可以可以。")),
         "relative": (f"S{day:%Y%m%d}1430", "下午2点半", (f"{spoken_date}下午两点可以吗？",
                      "刚才那个时间能不能晚一点？", "可以，麻烦您帮我约一下。")),
-        "filtered": (slot, "下午3点半", ("工作日下午有空吗？", "我选第二个。", date_request, "好，就这个时间。")),
+        "filtered": (slot, "下午3点半", ("工作日下午有空吗？", f"{spoken_date}下午具体几点？", "我选第二个。", date_request, "好，就这个时间。")),
     }
     slot, time_label, turns = scripts[scenario]
     return slot, time_label, intake + ("到店要带什么材料？",) + turns
