@@ -11,3 +11,8 @@ CREATE TABLE IF NOT EXISTS receipts (
 CREATE TABLE IF NOT EXISTS handoffs (
  space TEXT, session TEXT, data TEXT NOT NULL, PRIMARY KEY(space,session)
 );
+CREATE TABLE IF NOT EXISTS bank_customers (
+ space TEXT NOT NULL, number INTEGER NOT NULL, name TEXT NOT NULL,
+ phone_key TEXT NOT NULL, phone_tail TEXT NOT NULL,
+ PRIMARY KEY(space,number), UNIQUE(space,name,phone_key)
+);

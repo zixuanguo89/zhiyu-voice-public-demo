@@ -24,8 +24,9 @@ from services.providers import synthesize
 from services.storage import iso
 
 def conversation_script(scenario):
+    intake = ("我叫林小满。", "手机号是幺九九零零零零零九九幺。", "嗯，是的是的。")
     if scenario == "cancel":
-        return "S3", "下午4点", ("嗯，是的是的。", "我不想办了，你帮我把这个预约取消掉吧。", "取消了吗？", "确认取消。")
+        return "S3", "下午4点", intake + ("我不想办了，你帮我把这个预约取消掉吧。", "取消了吗？", "确认取消。")
     today = datetime.now(ZONE).date()
     third_day = today + timedelta(days=3)
     month = "这个月" if third_day.month == today.month else "下个月"
@@ -36,18 +37,19 @@ def conversation_script(scenario):
         "filtered": ("S2", "下午2点", ("上午太早，有下午的吗？", "我选第二个。", "还是选第一个吧。", "好，就这个时间。")),
     }
     slot, time_label, turns = scripts[scenario]
-    intro = ("确认什么？", "是是我本人要办卡。", "到店要带什么材料？")
-    return slot, time_label, intro + turns
+    return slot, time_label, intake + ("到店要带什么材料？",) + turns
 
 
 def seed_appointment(page, url):
     desk = page.evaluate("localStorage.getItem('zhiyu.desk')")
-    opened = page.request.post(url + "/api/sessions", headers={"X-Desk-Token": desk}, data={"scenario": "bank_card"})
+    opened = page.request.post(url + "/api/sessions", headers={"X-Desk-Token": desk}, data={
+        "scenario": "bank_card", "customer_intake": True,
+    })
     assert opened.ok
     data = opened.json()
     path = url + "/api/sessions/" + data["session_id"]
     auth = {"Authorization": "Bearer " + data["token"]}
-    for turn, text in enumerate(("我是本人，我要办卡", "第三个吧", "确认预约")):
+    for turn, text in enumerate(("我叫林小满，手机号是19900000991", "我是本人，我要办卡", "第三个吧", "确认预约")):
         response = page.request.post(path + "/turns", headers=auth, data={
             "text": text, "event_id": "evt_" + uuid4().hex, "expected_turn": turn,
         })
@@ -117,7 +119,7 @@ def main():
             page.locator("#open-current-record").click()
             expect(page.locator("#record-status")).to_have_text("通话中")
             expect(page.locator("#messages")).to_contain_text("到店预约已取消" if cancel else "预约成功", timeout=60000)
-            expect(page.locator("#messages")).to_contain_text("预约编号 A101", timeout=8000)
+            expect(page.locator("#messages")).to_contain_text("预约编号 A301", timeout=8000)
             page.wait_for_function("""() => {
                 const credential = JSON.parse(sessionStorage.getItem('zhiyu'));
                 return fetch('/api/sessions/' + credential.session_id + '/events', {
@@ -133,7 +135,7 @@ def main():
                                      headers={"Authorization":"Bearer " + credential["token"]}).json()
             assert sum(e["event_type"] == "audio.asr_final" for e in trail) >= len(utterances)
             assert any(e["event_type"] == "identity.verified" and
-                       e["turn_id"] == (1 if cancel else 2) and
+                       e["turn_id"] == 3 and
                        e["payload"].get("method") == "sandbox_spoken_confirmation" for e in trail)
             offers = [e for e in trail if e["event_type"] == "confirmation.offered" and
                       e["payload"]["params"]["target_slot"] == (None if cancel else expected_slot)]
@@ -155,6 +157,7 @@ def main():
                 assert any(e["event_type"] == "bank.guidance" and e["payload"]["topic"] == "documents" for e in trail)
             page.locator(".nav-item[data-view=booking]").click()
             expect(page.locator("#booking-table")).to_contain_text("Visa 借记卡到店办理")
+            expect(page.locator("#booking-table")).to_contain_text("林小满 · 尾号 0991")
             expect(page.locator("#booking-operations")).to_contain_text("取消预约" if cancel else f"新建预约 · {expected_slot}")
             if cancel:
                 expect(page.locator("#booking-table")).to_contain_text("已取消")

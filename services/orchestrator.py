@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import re
 import secrets
@@ -11,6 +12,8 @@ from services.bank import (BANK_APPOINTMENT, BANK_BRANCH, BANK_CHECKING, BANK_CO
                            bank_intent, bank_slot_offer, bank_slot_time, bank_space, bank_topics, bank_words, is_bank_space)
 from services.dialogue import (BASELINE, OPENING, POLICY_ID, SPOKEN_OPENING, SPOKEN_RETRY,
                                canonical_ids, denies_spoken_identity, parse, redacted, slot_label, spoken_identity)
+from services.customer import (CUSTOMER_OPENING, NAME_PROMPT, PHONE_PROMPT, customer_name, customer_phone,
+                               intake_stage)
 from services.storage import Store, digest, emit, encode, events, ident
 
 PENDING = "state IN ('PREPARED','SENT','UNKNOWN')"
@@ -33,16 +36,20 @@ class Conversation:
             db.execute("INSERT OR IGNORE INTO policies VALUES('baseline',NULL,?,'baseline',?,'{}')",
                        (encode(BASELINE), clock()))
             db.execute("INSERT OR IGNORE INTO active VALUES(1,'baseline')")
+            db.execute("INSERT OR IGNORE INTO customer_identity_key VALUES(1,?)", (secrets.token_bytes(32),))
+            self.customer_key = db.execute("SELECT secret FROM customer_identity_key").fetchone()[0]
 
-    def open(self, fault=None, space=None, desk=None, scenario=None):
+    def open(self, fault=None, space=None, desk=None, scenario=None, customer_intake=False):
         session, token = ident("ses"), secrets.token_urlsafe(32)
         space = desk or space or session
         bank = scenario == BANK_SCENARIO
-        if bank and not desk:
+        if (bank and not desk) or (customer_intake and not bank):
             raise Rejection("FORBIDDEN")
         if bank:
             space = bank_space(desk)
         opening = BANK_OPENING if bank else SPOKEN_OPENING if desk else OPENING
+        if customer_intake:
+            opening = CUSTOMER_OPENING
         self.business.seed(space)
         with self.store.tx(write=True) as db:
             policy = db.execute("SELECT policy FROM active").fetchone()[0]
@@ -53,6 +60,8 @@ class Conversation:
                         policy, opening, encode({"space": space, "mode": fault, "scenario": scenario})))
             if desk:
                 db.execute("INSERT INTO desk_calls VALUES(?,?,?,?)", (session, desk, "U100", self.clock()))
+            if customer_intake:
+                db.execute("INSERT INTO customer_intakes(session) VALUES(?)", (session,))
             emit(db, session, 0, "session.disclosed", {"policy_id": POLICY_ID, "reply": opening})
         return session, token
 
@@ -139,8 +148,10 @@ class Conversation:
                                       (row["confirmation"],)).fetchone()
             authorized = bool(scope and confirmation and confirmation["status"] == "OFFERED"
                               and confirmation["expires"] > self.clock())
+            intake = db.execute("SELECT * FROM customer_intakes WHERE session=?", (session,)).fetchone()
             return {"session_id": session, "state": row["state"], "turn": row["turn"],
                     "scenario": json.loads(row["fault"]).get("scenario"),
+                    "intake_stage": intake_stage(intake) if intake and not scope else None,
                     "policy": row["policy"], "verified": bool(scope), "reply": row["reply"] if scope or not row["scope"]
                     else "身份核验已过期，请重新核验。", "appointment": appointment,
                     "slots": slots, "closed": bool(row["closed"]), "pending": pending["state"] if pending else None,
@@ -164,13 +175,51 @@ class Conversation:
             db.execute("UPDATE sessions SET turn=turn+1 WHERE id=?", (session,))
             db.execute("DELETE FROM reports WHERE session=?", (session,))
             row = self._get(db, session)
-            emit(db, session, row["turn"], "user.received", {"text": redacted(text)}, event_id)
+            intake = db.execute("SELECT * FROM customer_intakes WHERE session=?", (session,)).fetchone()
+            capturing_phone = intake and not row["scope"] and intake_stage(intake) in {"phone", "confirm"}
+            emit(db, session, row["turn"], "user.received",
+                 {"text": redacted(text, minimum=3 if capturing_phone else 6)}, event_id)
             self._apply(db, row, text, suggestion, reliable, reverify)
         if before_send:
             before_send()
         if auto:
             self.advance(session, force=True)
         return True
+
+    def _identify_customer(self, db, row, intake, text, action, target, reliable):
+        stage = intake_stage(intake)
+        name, phone_key, tail = intake["name"], intake["phone_key"], intake["phone_tail"]
+        follow_up = spoken_identity(text) if reliable else None
+        updated = False
+        if reliable and action not in {"off_topic", "bank_faq"}:
+            supplied_name = None if follow_up is not None else customer_name(
+                text, unlabelled=stage == "name" and action in {"clarify", "unrecognized"})
+            phone = customer_phone(text)
+            if supplied_name or phone:
+                name = supplied_name or name
+                if phone:
+                    phone_key = hmac.digest(self.customer_key, f"{self._space(row)}:{phone}".encode(), "sha256").hex()
+                    tail = phone[-4:]
+                db.execute("UPDATE customer_intakes SET name=?,phone_key=?,phone_tail=? WHERE session=?",
+                           (name, phone_key, tail, row["id"]))
+                updated = True
+
+        if stage == "confirm" and not updated and follow_up is not None:
+            scope, appointment = self.business.bank_customer(self._space(row), name, phone_key, tail)
+            return scope, appointment, follow_up
+        if not name:
+            prompt = NAME_PROMPT
+        elif not phone_key:
+            prompt = f"好的，{name}。{PHONE_PROMPT}" if updated else "麻烦再说一下完整的 11 位预约手机号，慢慢说就好。"
+        else:
+            tail_spoken = " ".join(tail)
+            prompt = f"我对一下，您叫{name}，手机号尾号 {tail_spoken}。是您本人办理吗？"
+        if reliable and action == "bank_faq":
+            prompt = self._bank_guidance(db, row, target) + prompt
+        elif reliable and action == "off_topic":
+            prompt = target + "咱们接着说预约。" + prompt
+        self._say(db, row, prompt, "VERIFYING")
+        return None
 
     def _apply(self, db, row, text, suggestion, reliable, reverify):
         session, space = row["id"], self._space(row)
@@ -211,11 +260,18 @@ class Conversation:
                 reply = "明白，那我先不往下办了。需要的话，可以帮您转人工。" if bank else "已停止办理。如需协助，可以转人工。"
                 self._say(db, row, reply, "VERIFYING")
                 return
+            intake = db.execute("SELECT * FROM customer_intakes WHERE session=?", (session,)).fetchone()
             follow_up = ""
+            appointment = None
             try:
-                if not reliable:
+                if intake:
+                    identity = self._identify_customer(db, row, intake, text, action, target, reliable)
+                    if identity is None:
+                        return
+                    verified, appointment, follow_up = identity
+                elif not reliable:
                     raise Rejection("NOT_VERIFIED")
-                if binding:
+                elif binding:
                     follow_up = spoken_identity(text)
                     if follow_up is None:
                         raise Rejection("NOT_VERIFIED")
@@ -239,8 +295,9 @@ class Conversation:
                     prompt = SPOKEN_RETRY if binding else "请先输入六位演示验证码，或选择转人工。"
                 self._say(db, row, prompt, "VERIFYING")
                 return
-            appointment = BANK_APPOINTMENT if bank else next(
-                a[0] for a in self.business.fixture["appointments"] if a[1] == verified)
+            if appointment is None:
+                appointment = BANK_APPOINTMENT if bank else next(
+                    a[0] for a in self.business.fixture["appointments"] if a[1] == verified)
             db.execute("UPDATE sessions SET scope=?,verified_until=?,appointment=? WHERE id=?",
                        (verified, min(row["expires"], self.clock() + 900), appointment, session))
             emit(db, session, row["turn"], "identity.verified",

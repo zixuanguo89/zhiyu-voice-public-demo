@@ -468,6 +468,73 @@ class Cases(unittest.TestCase):
             self.assertTrue(offered["verified"])
             self.assertIn("您看哪个方便", offered["reply"])
 
+    def test_customer_appointments_are_separate_and_reusable(self):
+        desk = {"X-Desk-Token": "desk_" + "c" * 64}
+        options = {"scenario": "bank_card", "customer_intake": True}
+        settings = self.settings()
+
+        def open_call(client, headers=desk):
+            opened = client.post("/api/sessions", headers=headers, json=options).json()
+            path = "/api/sessions/" + opened["session_id"]
+            auth = {"Authorization": "Bearer " + opened["token"]}
+            turn = 0
+
+            def say(text):
+                nonlocal turn
+                response = client.post(path + "/turns", headers=auth, json={
+                    "text": text, "event_id": ident("evt"), "expected_turn": turn,
+                })
+                self.assertEqual(response.status_code, 200)
+                turn += 1
+                return response.json()["snapshot"]
+
+            self.assertEqual(opened["snapshot"]["intake_stage"], "name")
+            return say, path, auth
+
+        with TestClient(create_app(settings)) as client:
+            a, path, auth = open_call(client)
+            self.assertEqual(a("你好，我想预约一张借记卡")["intake_stage"], "name")
+            self.assertEqual(a("我叫林小满")["intake_stage"], "phone")
+            self.assertEqual(a("一九九")["intake_stage"], "phone")
+            self.assertFalse(a("我是本人")["verified"])
+            phone = "一九九，零零零零，零九九一"
+            confirmation = a("手机号是" + phone)
+            self.assertEqual(confirmation["intake_stage"], "confirm")
+            self.assertIn("尾号 0 9 9 1", confirmation["reply"])
+            self.assertTrue(a("是我本人")["verified"])
+            self.assertEqual(a("我选第一个")["offer"]["target_slot"], "S1")
+            first = a("确认预约")["appointment"]["id"]
+            trail = client.get(path + "/events", headers=auth).json()
+            self.assertNotIn(phone, json.dumps(trail, ensure_ascii=False))
+            self.assertNotIn("19900000991", json.dumps(trail, ensure_ascii=False))
+            self.assertTrue(client.post(path + "/close", headers=auth).is_success)
+
+            b, path, auth = open_call(client)
+            self.assertEqual(b("我是林小雨，手机号是19900000991")["intake_stage"], "confirm")
+            self.assertTrue(b("是的，我想预约办理借记卡")["verified"])
+            self.assertIn("无法访问", b("查一下预约编号 " + first)["reply"])
+            self.assertEqual(b("我选 S1")["offer"], None)
+            self.assertEqual(b("我选 S2")["offer"]["target_slot"], "S2")
+            second = b("确认预约")["appointment"]["id"]
+            self.assertNotEqual(first, second)
+            self.assertTrue(client.post(path + "/close", headers=auth).is_success)
+
+        with TestClient(create_app(settings)) as client:
+            a, _, _ = open_call(client)
+            self.assertEqual(a("林小满")["intake_stage"], "phone")
+            self.assertEqual(a("电话是 +86 １９９-００００-０９９１")["intake_stage"], "confirm")
+            self.assertEqual(a("是我")["appointment"]["id"], first)
+            self.assertEqual(a("帮我取消预约")["offer"]["action"], "cancel")
+            self.assertEqual(a("确认取消")["appointment"]["status"], "canceled")
+
+            records = client.get("/api/desk/booking", headers=desk).json()["appointments"]
+            customers = {row["id"]: (row["customer_name"], row["phone_tail"], row["status"])
+                         for row in records if row["customer_name"]}
+            self.assertEqual(customers, {first: ("林小满", "0991", "canceled"),
+                                         second: ("林小雨", "0991", "active")})
+            other_desk = {"X-Desk-Token": "desk_" + "b" * 64}
+            self.assertEqual(client.get("/api/desk/booking", headers=other_desk).json()["appointments"], [])
+
     def test_bank_understands_natural_identity_answers(self):
         desk = "desk_" + "e" * 64
         for words in ("别删了呀，嗯是我本人要办卡。", "是是我本人要办卡。", "嗯，是是。", "是本人是本人是。",

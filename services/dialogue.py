@@ -63,10 +63,10 @@ def spoken_identity(text):
     return None
 
 
-def redacted(text):
+def redacted(text, minimum=6):
     # Never persist verification codes or full telephone/ID numbers.
-    digits = "0-9０-９零〇一二两三四五六七八九幺"
-    return re.sub(rf"[{digits}](?:[\s\-]?[{digits}]){{5,}}", "[已隐藏]", text)
+    digits = "0-9０-９零〇洞一二两三四五六七八九幺"
+    return re.sub(rf"[{digits}](?:[\s,、，.。;；()（）\-－–—]*[{digits}]){{{minimum - 1},}}", "[已隐藏]", text)
 
 
 def slot_label(slot):

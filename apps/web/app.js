@@ -129,7 +129,8 @@ function render(s) {
   $("send").disabled = !usable || sent;
   renderCancelActions(s);
   $("utterance").disabled = !usable;
-  $("utterance").placeholder = usable && !s.verified ? "我是本人，我想预约办理 Visa 借记卡" : "输入消息";
+  const prompts = {name:"例如：我叫林小满",phone:"输入 11 位演示手机号",confirm:"例如：是我本人"};
+  $("utterance").placeholder = prompts[s?.intake_stage] || "输入消息";
 }
 function renderCancelActions(s) {
   const available = Boolean(s && !s.closed && s.offer?.action === "cancel");
@@ -168,7 +169,9 @@ async function start(withVoice) {
   const call = withVoice ? new Voice() : null;
   try {
     if (call) call.prepare();
-    const data = await desk("/api/sessions",{method:"POST",body:{fault:$("fault").value || null,scenario:"bank_card"}});
+    const data = await desk("/api/sessions",{method:"POST",body:{
+      fault:$("fault").value || null,scenario:"bank_card",customer_intake:true
+    }});
     if (pendingRefresh) await pendingRefresh.catch(() => {});
     credential = {session_id:data.session_id,token:data.token};
     sessionStorage.setItem("zhiyu",JSON.stringify(credential));
@@ -277,6 +280,9 @@ function recordBadge(call) {
   return {completed:"已办结",pending:"待核实",handed_off:"已转人工",not_completed:"未办成",
     consulted:"咨询结束",unverified:"未确认身份"}[call.result?.status] || "已挂断";
 }
+function customerLabel(record) {
+  return record.customer_name && record.phone_tail ? `${record.customer_name} · 尾号 ${record.phone_tail}` : "";
+}
 function appendEvidence(event) {
   const item = node("details");
   item.id = event.event_id;
@@ -314,7 +320,7 @@ async function loadRecords() {
         row.className = "record-row";
         row.setAttribute("aria-pressed", String(id === selectedCall));
         row.append(node("strong","通话 " + id.slice(-8)),node("span",recordBadge(call),"chip"),
-          node("small",formatStamp(call.created_at) + " · " + call.turns + " 轮"));
+          node("small",[customerLabel(call),formatStamp(call.created_at),call.turns + " 轮"].filter(Boolean).join(" · ")));
         return row;
       });
       $("record-list").replaceChildren(...(rows.length ? rows : [node("p","拨出第一通电话后，记录会出现在这里。","hint")]));
@@ -325,7 +331,8 @@ async function loadRecords() {
     const data = await desk(`/api/desk/calls/${id}?after=${recordCursor}`);
     if (selectedCall !== id || view !== "records") return;
     const {call, events} = data;
-    $("record-meta").textContent = formatStamp(call.created_at) + " · " + call.turns + " 轮用户发言";
+    $("record-meta").textContent = [customerLabel(call),formatStamp(call.created_at),
+      call.turns + " 轮用户发言"].filter(Boolean).join(" · ");
     chip($("record-status"),recordBadge(call),call.result?.status === "pending" ? "warn" : "");
     $("record-status").hidden = false;
     $("record-evidence").hidden = false;
@@ -406,7 +413,8 @@ function activityText(event) {
 function renderBooking(data) {
   const operationStates = {PREPARED:"待提交",SENT:"已提交",UNKNOWN:"待核实",SUCCEEDED:"成功",REJECTED:"拒绝"};
   renderTable("booking-table",["预约","业务与网点","客户","当前时段","状态","版本"],data.appointments.map((a) => [
-    a.id,a.branch ? a.service + " · " + a.branch : a.service,a.owner,a.slot + " · " + formatSlot(a),
+    a.id,a.branch ? a.service + " · " + a.branch : a.service,
+    customerLabel(a) || (a.branch ? "演示客户 " + a.owner : a.owner),a.slot + " · " + formatSlot(a),
     node("span",a.status === "active" ? "有效" : "已取消","chip"),a.version
   ]),"首次呼出后会创建本工作台的预约数据。");
   $("booking-slots").replaceChildren(...(data.slots.length ? data.slots.map((slot) => {

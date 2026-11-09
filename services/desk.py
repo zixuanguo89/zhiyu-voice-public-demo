@@ -23,6 +23,7 @@ def desk_key(token):
 
 def summary(row):
     return {"session_id": row["id"], "state": row["state"], "closed": bool(row["closed"]),
+            "customer_name": row["name"], "phone_tail": row["phone_tail"],
             "turns": row["turn"], "created_at": iso(row["created"]), "result": json.loads(row["result"])
             if row["result"] else None}
 
@@ -51,9 +52,10 @@ class CallDesk:
     def calls(self, desk, before):
         with self.store.tx() as db:
             rows = db.execute("""
-                SELECT d.rowid AS cursor,d.created,s.id,s.state,s.turn,s.closed,r.data AS result
+                SELECT d.rowid AS cursor,d.created,s.id,s.state,s.turn,s.closed,r.data AS result,i.name,i.phone_tail
                 FROM desk_calls d JOIN sessions s ON s.id=d.session
                 LEFT JOIN session_results r ON r.session=s.id
+                LEFT JOIN customer_intakes i ON i.session=s.id AND i.phone_tail IS NOT NULL
                 WHERE d.desk=? AND (? IS NULL OR d.rowid<?) ORDER BY d.rowid DESC LIMIT 41
             """, (desk, before, before)).fetchall()
         return {"items": [summary(row) for row in rows[:40]],
@@ -62,9 +64,10 @@ class CallDesk:
     def detail(self, desk, session, after):
         with self.store.tx() as db:
             row = db.execute("""
-                SELECT d.created,s.id,s.state,s.turn,s.closed,r.data AS result
+                SELECT d.created,s.id,s.state,s.turn,s.closed,r.data AS result,i.name,i.phone_tail
                 FROM desk_calls d JOIN sessions s ON s.id=d.session
                 LEFT JOIN session_results r ON r.session=s.id
+                LEFT JOIN customer_intakes i ON i.session=s.id AND i.phone_tail IS NOT NULL
                 WHERE d.desk=? AND d.session=?
             """, (desk, session)).fetchone()
             if row is None:
@@ -76,8 +79,10 @@ class CallDesk:
         with self.conversation.business.store.tx() as db:
             appointments = []
             for row in db.execute("""
-                SELECT a.id,a.owner,a.slot,a.status,a.version,s.start,a.space FROM appointments a
-                JOIN slots s ON s.space=a.space AND s.id=a.slot WHERE a.space IN (?,?)
+                SELECT a.id,a.owner,a.slot,a.status,a.version,s.start,a.space,c.name AS customer_name,c.phone_tail
+                FROM appointments a JOIN slots s ON s.space=a.space AND s.id=a.slot
+                LEFT JOIN bank_customers c ON c.space=a.space AND 'C'||c.number=a.owner
+                WHERE a.space IN (?,?)
                 ORDER BY a.space=?,a.id
             """, (desk, branch_space, desk)):
                 record = dict(row)

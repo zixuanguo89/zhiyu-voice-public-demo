@@ -45,7 +45,7 @@ def main():
         credential = page.evaluate("JSON.parse(sessionStorage.getItem('zhiyu'))")
         events = page.request.get(args.url+"/api/sessions/"+credential["session_id"]+"/events",
                                   headers={"Authorization":"Bearer "+credential["token"]}).json()
-        assert sum(e["event_type"] == "audio.asr_final" for e in events) == 4
+        assert sum(e["event_type"] == "audio.asr_final" for e in events) == 6
         assert sum(e["event_type"] == "operation.sent" for e in events) == 1
         receipt = next(e["payload"] for e in events if e["event_type"]=="operation.receipt")
         assert receipt["result"]["slot"] == "S2" and receipt["result"]["version"] == 1

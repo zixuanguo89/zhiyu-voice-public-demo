@@ -142,8 +142,9 @@ class VoiceCall:
             self.cut()
             self.partial = True
             self.segment += 1
+            self.partial_intake = self.conversation.snapshot(self.session)["intake_stage"]
         if not stable:
-            self.send({"type": "partial", "text": redacted(text)})
+            self.send({"type": "partial", "text": "正在收集预约资料…" if self.partial_intake else redacted(text)})
             return
         self.partial = False
         turn = self.conversation.snapshot(self.session)["turn"]

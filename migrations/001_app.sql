@@ -21,6 +21,12 @@ CREATE TABLE IF NOT EXISTS desk_calls (
  session TEXT PRIMARY KEY, desk TEXT NOT NULL, expected_scope TEXT NOT NULL, created REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS desk_call_order ON desk_calls(desk, created, session);
+CREATE TABLE IF NOT EXISTS customer_intakes (
+ session TEXT PRIMARY KEY, name TEXT, phone_key TEXT, phone_tail TEXT
+);
+CREATE TABLE IF NOT EXISTS customer_identity_key (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), secret BLOB NOT NULL
+);
 CREATE INDEX IF NOT EXISTS session_events ON events(session,sequence);
 CREATE TABLE IF NOT EXISTS confirmations (
  id TEXT PRIMARY KEY, session TEXT NOT NULL, scope TEXT NOT NULL, revision INTEGER NOT NULL,

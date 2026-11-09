@@ -38,6 +38,7 @@ class Strict(BaseModel):
 class Open(Strict):
     fault: Literal["before", "after", "unknown"] | None = None
     scenario: Literal["bank_card"] | None = None
+    customer_intake: bool = False
 
 
 class Turn(Strict):
@@ -186,7 +187,7 @@ def create_app(settings=None):
             raise Rejection("FORBIDDEN")
         public_limit("session", 60)
         session, token = conversation.open(body.fault, desk=desk_key(x_desk_token) if x_desk_token else None,
-                                           scenario=body.scenario)
+                                           scenario=body.scenario, customer_intake=body.customer_intake)
         return {"session_id": session, "token": token, "snapshot": conversation.snapshot(session)}
 
     @app.post("/api/desk/calls/{session}/link")

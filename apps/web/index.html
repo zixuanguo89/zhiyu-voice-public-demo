@@ -24,8 +24,8 @@
       <section class="intro">
         <p class="eyebrow">银行网点 · 预约演练</p>
         <h1>打电话</h1>
-        <p>呼出后可以直接说「我是本人，我想预约办理 Visa 借记卡」。</p>
-        <p class="hint" id="public-notice" hidden>这是公开演示。对话会转写并留存在本浏览器工作台，请用虚构资料，避免说出真实证件号码或联系方式。</p>
+        <p>呼出后先留全名和预约手机号，再办理 Visa 借记卡到店预约。</p>
+        <p class="hint" id="public-notice" hidden>公网演示请用虚构资料。当前浏览器的预约和通话记录会在免费实例休眠或重启后清空。</p>
       </section>
       <div class="call-layout">
         <div class="side">
@@ -106,7 +106,7 @@
             </dl>
             <h3>可以这样和客服说</h3>
             <ol class="scenario-steps">
-              <li><strong>说明来意</strong><span>「您好，我是本人，我想预约办理 Visa 借记卡。」</span></li>
+              <li><strong>留下预约资料</strong><span>例如说「我叫林小满」，按提示逐位报演示号码 19900000991，再核对姓名和尾号。再次来电时使用同一组资料。</span></li>
               <li><strong>询问材料</strong><span>「我到店需要带什么材料？」</span></li>
               <li><strong>选择时段</strong><span>可以直接问「那天是几点来着？」报出你想问的日期，也可以说「改成第二个时段」。</span></li>
               <li><strong>确认办理</strong><span>客服问「要我帮您约这个时间吗？」时，说「可以」或「就这个时间吧」。</span></li>
@@ -116,7 +116,7 @@
               <p>客服会播报预约编号、到店时段和网点。打开「预约后台」，核对预约台账、库存变化和 AI 的业务操作单。</p>
               <p>已预约后，也可以说「帮我把这个预约取消掉」。核对后说「确认取消」，或在当前通话里点「确认取消预约」。</p>
             </div>
-            <p class="hint scenario-note">虚构网点与合成客户。预约用于到店提交申请，发卡和费用由网点现场审核及说明。</p>
+            <p class="hint scenario-note">请用虚构姓名和演示号码。预约用于到店提交申请，发卡和费用由网点现场审核及说明。</p>
           </div>
         </aside>
       </div>
@@ -147,7 +147,7 @@
       <section class="intro"><p class="eyebrow">预约业务沙箱</p><h1>预约后台</h1><p>查看真实写入沙箱的预约、可用时段，以及 AI 每一次查询、确认和提交的结果。</p></section>
       <div class="booking-top">
         <section class="panel">
-          <div class="panel-head"><div><h2>预约台账</h2><p>当前浏览器工作台的合成客户</p></div></div>
+          <div class="panel-head"><div><h2>预约台账</h2><p>同一工作台可留存多位客户的预约，仅显示手机号尾号</p></div></div>
           <div id="booking-table" class="panel-body table-scroll"></div>
         </section>
         <section class="panel">

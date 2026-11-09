@@ -51,6 +51,18 @@ class Sandbox:
                     return scope
         raise Rejection("NOT_VERIFIED")
 
+    def bank_customer(self, space, name, phone_key, phone_tail):
+        with self.store.tx(write=True) as db:
+            customer = db.execute("SELECT number FROM bank_customers WHERE space=? AND name=? AND phone_key=?",
+                                  (space, name, phone_key)).fetchone()
+            if customer:
+                number = customer["number"]
+            else:
+                number = db.execute("SELECT COALESCE(MAX(number),300)+1 FROM bank_customers WHERE space=?",
+                                    (space,)).fetchone()[0]
+                db.execute("INSERT INTO bank_customers VALUES(?,?,?,?,?)", (space, number, name, phone_key, phone_tail))
+        return f"C{number}", f"A{number}"
+
     @staticmethod
     def _appointment(db, space, scope, appointment):
         if not scope:
@@ -61,7 +73,10 @@ class Sandbox:
         if is_bank_space(space):
             if row:
                 return {**dict(row), "branch": BANK_BRANCH, "service": BANK_SERVICE}
-            if appointment == BANK_APPOINTMENT and scope == "U100":
+            customer = db.execute("""SELECT 1 FROM bank_customers
+                                     WHERE space=? AND 'C'||number=? AND 'A'||number=?""",
+                                  (space, scope, appointment)).fetchone()
+            if customer or (appointment == BANK_APPOINTMENT and scope == "U100"):
                 return {"id": appointment, "slot": None, "version": 0, "status": "unbooked",
                         "branch": BANK_BRANCH, "service": BANK_SERVICE}
         if row:
