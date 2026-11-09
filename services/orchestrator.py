@@ -8,9 +8,10 @@ from datetime import datetime
 
 from services.business import Rejection, Unknown, ZONE
 from services.bank import (BANK_APPOINTMENT, BANK_ASK_PREFERENCE, BANK_BRANCH, BANK_CHECKING, BANK_CONFIRM,
-                           BANK_CONFIRM_FALLBACK, BANK_CONFIRM_HELP, BANK_DETOUR, BANK_FAQ, BANK_HANDOFF, BANK_NO_MATCH,
-                           BANK_OPENING, BANK_SCENARIO, bank_availability,
-                           bank_intent, bank_slot_offer, bank_slot_time, bank_space, bank_topics, bank_words, is_bank_space)
+                           BANK_CONFIRM_FALLBACK, BANK_CONFIRM_HELP, BANK_DETOUR, BANK_FAQ, BANK_HANDOFF,
+                           BANK_HANDOFF_QUESTION, BANK_NO_MATCH, BANK_OPENING, BANK_SCENARIO, BANK_TIME_OR_HANDOFF,
+                           bank_availability, bank_intent, bank_short_answer, bank_slot_offer, bank_slot_time,
+                           bank_space, bank_topics, bank_words, is_bank_space)
 from services.bank_time import slot_matches
 from services.dialogue import (BASELINE, OPENING, POLICY_ID, SPOKEN_OPENING, SPOKEN_RETRY,
                                canonical_ids, denies_spoken_identity, parse, redacted, slot_label, spoken_identity)
@@ -134,6 +135,12 @@ class Conversation:
             config = db.execute("SELECT config FROM policies WHERE id=?", (row["policy"],)).fetchone()[0]
             return row["state"], json.loads(config), bool(row["scope"] and row["verified_until"] > self.clock())
 
+    def intent_context(self, session):
+        with self.store.tx() as db:
+            previous = self._last_reply(db, session)
+            question = "appointment_confirmation" if previous.get("confirmation_id") else previous.get("question")
+            return {"question": question, "offered_slots": previous.get("slot_options", [])}
+
     def snapshot(self, session):
         with self.store.tx() as db:
             row = self._get(db, session)
@@ -222,7 +229,8 @@ class Conversation:
             prompt = self._bank_guidance(db, row, target) + prompt
         elif reliable and action == "off_topic":
             prompt = target + "咱们接着说预约。" + prompt
-        self._say(db, row, prompt, "VERIFYING")
+        question = "identity" if name and phone_key else "phone" if name else "name"
+        self._say(db, row, prompt, "VERIFYING", question=question)
         return None
 
     def _apply(self, db, row, text, suggestion, reliable, reverify):
@@ -232,12 +240,30 @@ class Conversation:
         pending = self._pending(db, session)
         today = datetime.fromtimestamp(self.clock(), ZONE).date() if bank else None
         action, target = bank_intent(text, today=today) if bank else parse(text)
+        previous = self._last_reply(db, session) if bank or action == "continue" else {}
+        question = previous.get("question")
+        short = bank_short_answer(text) if bank else None
+        if short and question in {"handoff", "time_or_handoff", "paused"}:
+            if reliable and short in {"yes", "polite"} and question == "handoff":
+                action = "handoff"
+            elif reliable and (short == "no" or question == "paused"):
+                self._say(db, row, "好，有需要您再跟我说。", question="paused")
+                return
+            else:
+                prompt = BANK_HANDOFF_QUESTION if question == "handoff" else BANK_TIME_OR_HANDOFF
+                if question == "paused":
+                    prompt = "好，有需要您再跟我说。"
+                self._say(db, row, prompt, question=question)
+                return
+        if question == "handoff" and action in {"hold", "courtesy"}:
+            self._say(db, row, f"好，您慢慢考虑。{BANK_HANDOFF_QUESTION}", question="handoff")
+            return
         if bank and reliable and action in {"unrecognized", "clarify"} and (suggestion or {}).get("intent") == "off_topic":
             action, target = "off_topic", BANK_DETOUR
         detour = target if action == "off_topic" and reliable else ""
         if action == "handoff":
             if bank and not reliable:
-                self._say(db, row, "刚才没听清，您是想转人工吗？请再说一遍。")
+                self._say(db, row, "刚才没听清，您是想转人工吗？", question="handoff")
                 return
             self._invalidate(db, row, "HANDOFF")
             pending = self._pending(db, session)
@@ -261,10 +287,11 @@ class Conversation:
             self._invalidate(db, row, "REVERIFY")
             db.execute("UPDATE sessions SET scope=NULL,verified_until=NULL WHERE id=?", (session,))
             binding = db.execute("SELECT expected_scope FROM desk_calls WHERE session=?", (session,)).fetchone()
-            if action == "refuse" or (binding and not detour and denies_spoken_identity(text)):
+            identity_no = question == "identity" and re.fullmatch(r"不(?:是)?[的啊呀呢]?", bank_words(text))
+            if action == "refuse" or (binding and not detour and (identity_no or denies_spoken_identity(text))):
                 emit(db, session, row["turn"], "identity.rejected", {"code": "NOT_VERIFIED"})
-                reply = "明白，那我先不往下办了。需要的话，可以帮您转人工。" if bank else "已停止办理。如需协助，可以转人工。"
-                self._say(db, row, reply, "VERIFYING")
+                reply = f"明白，那我先不往下办了。{BANK_HANDOFF_QUESTION}" if bank else "已停止办理。如需协助，可以转人工。"
+                self._say(db, row, reply, "VERIFYING", **({"question": "handoff"} if bank else {}))
                 return
             intake = db.execute("SELECT * FROM customer_intakes WHERE session=?", (session,)).fetchone()
             follow_up = ""
@@ -299,7 +326,7 @@ class Conversation:
                         prompt = BANK_CONFIRM
                 else:
                     prompt = SPOKEN_RETRY if binding else "请先输入六位演示验证码，或选择转人工。"
-                self._say(db, row, prompt, "VERIFYING")
+                self._say(db, row, prompt, "VERIFYING", **({"question": "identity"} if bank else {}))
                 return
             if appointment is None:
                 appointment = BANK_APPOINTMENT if bank else next(
@@ -320,7 +347,6 @@ class Conversation:
             reply = BANK_CHECKING if bank else "上一项操作已发出，结果仍待核实。核对后才能办理新的变更。"
             self._say(db, row, detour + reply, "RECONCILING")
             return
-        previous = self._last_reply(db, session) if bank or action == "continue" else {}
         choice_ids = previous.get("slot_options", [])
         if detour:
             if row["confirmation"] and self._bank_restate(db, row, f"{detour}回到刚才的预约。"):
@@ -336,15 +362,21 @@ class Conversation:
             self._say(db, row, detour + next_step, slot_options=choice_ids)
             return
         if action == "continue":
-            links = {key: previous[key] for key in ("operation_id", "receipt_id", "confirmation_id", "slot_options")
+            links = {key: previous[key] for key in ("operation_id", "receipt_id", "confirmation_id", "slot_options", "question")
                      if key in previous}
             self._say(db, row, row["reply"], **links)
             return
         if action == "discard":
             self._invalidate(db, row, "USER_DISCARDED")
             reply = "好，那咱们先不办，您的预约这次没有变动。" if bank else "已放弃本次办理，预约未因此变更。"
-            self._say(db, row, reply, "COLLECTING")
+            self._say(db, row, reply, "COLLECTING", **({"question": "paused"} if bank else {}))
             return
+        if short == "reference" and choice_ids and not previous.get("confirmation_id"):
+            if len(choice_ids) != 1 or not reliable:
+                self._say(db, row, "您指的是哪个时段？说第几个或者具体几点都行。", slot_options=choice_ids)
+                return
+            text = choice_ids[0]
+            action = "choose"
         if action in {"confirm", "agree"}:
             self._confirm(db, row, scope, bank_words(text) if bank else text, reliable, target, bank,
                           conversational=action == "agree")
@@ -400,7 +432,8 @@ class Conversation:
             lead = "好，原来的预约先给您保留。" if active_slot else "行，咱们换个时间。"
             reply = (BANK_ASK_PREFERENCE if matches is None else
                      bank_availability(options) if options else BANK_NO_MATCH)
-            self._say(db, row, lead + reply, "OFFERING", slot_options=[slot["id"] for slot in options])
+            self._say(db, row, lead + reply, "OFFERING", slot_options=[slot["id"] for slot in options],
+                      question="time_or_handoff" if matches is not None and not options else "time")
             return
         if action == "cancel_status" and active_slot and row["confirmation"] and self._bank_restate(
                 db, row, "这笔预约还没有取消，正在等您确认。", action="cancel"):
@@ -457,7 +490,8 @@ class Conversation:
                        (slot["available"] or slot == active_slot)][:4]
             times = "、".join(map(bank_slot_time, options))
             reply = f"可以参考{times}。我先只帮您查时间。" if times else BANK_NO_MATCH
-            self._say(db, row, guidance + reply, "OFFERING")
+            self._say(db, row, guidance + reply, "OFFERING", slot_options=[slot["id"] for slot in options],
+                      question="time" if options else "time_or_handoff")
             return
         if asked_time:
             if active_slot and target == (active_slot["id"],):
@@ -466,7 +500,8 @@ class Conversation:
             if len(target) != 1:
                 options = [slot for slot in available if slot["id"] in target][:4]
                 reply = bank_availability(options) if options else BANK_NO_MATCH
-                self._say(db, row, guidance + reply, "OFFERING", slot_options=[slot["id"] for slot in options])
+                self._say(db, row, guidance + reply, "OFFERING", slot_options=[slot["id"] for slot in options],
+                          question="time" if options else "time_or_handoff")
                 return
             action, target = "choose", target[0]
         listing = "、".join(map(slot_label, available)) or "暂无可用时段，可以转人工登记需求"
@@ -484,7 +519,8 @@ class Conversation:
                     intro = "好，Visa 借记卡可以约到店办。您现在还没约时间。"
                 options = available[:4] if action == "query" else []
                 reply = intro if action != "query" else intro + bank_availability(options)
-                self._say(db, row, reply, "OFFERING", slot_options=[slot["id"] for slot in options])
+                self._say(db, row, reply, "OFFERING", slot_options=[slot["id"] for slot in options],
+                          question=("time" if options else "handoff") if action == "query" else None)
             else:
                 self._say(db, row, f"预约 {appt} 的时段是 {slot_label(current_slot)}，状态{status}。可选时段：{listing}。", "OFFERING")
         elif action == "help":

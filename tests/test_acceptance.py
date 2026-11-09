@@ -578,6 +578,36 @@ class Cases(unittest.TestCase):
         self.assertFalse(active_slot["available"])
         self.assertTrue(any(slot["start"].startswith("2026-12-04") for slot in state["slots"]))
 
+    def test_bank_short_answers_follow_the_latest_question(self):
+        desk = "desk_" + "e" * 64
+        for answer in ("好的。", "嗯好啊", "那行，麻烦了", "成", "对啊", "那麻烦您一下"):
+            with self.subTest(answer=answer):
+                session, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
+                self.say(session, "我叫林小满，手机号19900000991", "不是")
+                self.assertIn("转人工吗", self.say(session, "嗯")["reply"])
+                handed_off = self.say(session, answer)
+                self.assertEqual(handed_off["state"], "HANDOFF")
+                self.assertEqual(handed_off["reply"], "好的，稍后由人工客服与您对接")
+                self.assertFalse(handed_off["verified"])
+                self.assertEqual(sum(e["event_type"] == "handoff.created" for e in self.call.evidence(session)), 1)
+
+        session, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
+        self.say(session, "我叫林小雨，手机号19900000992", "不是", "不用了")
+        self.assertIn("有需要", self.say(session, "好")["reply"])
+        self.assertFalse(self.call.snapshot(session)["verified"])
+        self.assertTrue(self.say(session, "刚才说反了，是我本人")["verified"])
+        self.assertIsNone(self.say(session, "就那个")["offer"])
+        offered = self.say(session, "第二")
+        self.assertIsNotNone(offered["offer"])
+        self.say(session, "到店带什么材料？")
+        self.assertEqual(self.say(session, "对啊")["appointment"]["status"], "unbooked")
+        self.assertEqual(self.say(session, "对啊")["appointment"]["status"], "active")
+        self.say(session, "取消预约")
+        self.assertEqual(self.say(session, "不要了")["appointment"]["status"], "active")
+        self.assertIsNone(self.call.snapshot(session)["offer"])
+        self.say(session, "周六下午有空吗")
+        self.assertIn("换个时间，还是", self.say(session, "好的")["reply"])
+
     def test_connected_voice_session_outlives_inactive_session_expiry(self):
         config = self.settings()
         config.public_demo = config.audio = True

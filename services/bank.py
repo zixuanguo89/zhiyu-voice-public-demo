@@ -14,6 +14,8 @@ BANK_CONFIRM_HELP = "想确认这张卡是不是给您自己办。如果是，�
 BANK_CONFIRM_FALLBACK = "这句我还没确认清楚。您可以再说一声“是”，也可以点电话页的“改用文字交谈”，输入“我是本人”。"
 BANK_CHECKING = "稍等一下，我还在查这笔预约的结果。有结果我再跟您说，您也可以转人工。"
 BANK_HANDOFF = "好的，稍后由人工客服与您对接"
+BANK_HANDOFF_QUESTION = "要我帮您转人工吗？"
+BANK_TIME_OR_HANDOFF = "您想再换个时间，还是我帮您转人工？"
 BANK_NO_MATCH = "目前没有这个时段。您可以换个工作日下午，也可以说‘转人工’，我帮您登记。"
 BANK_ASK_PREFERENCE = "那您哪天下午方便？大概几点也行，我帮您查。"
 DECLINED_TIMES = re.compile(
@@ -85,6 +87,26 @@ def bank_slot_offer(params, lead="", *, asked_time=False):
 def bank_words(text):
     compact = re.sub(r"[，,。！!、；;\s]", "", text)
     return re.sub(r"^[嗯啊呃额唔哦噢哎]+", "", compact)
+
+
+def bank_short_answer(text):
+    if any(mark in text for mark in ("?", "？")):
+        return None
+    words = bank_words(text)
+    if not words and re.search(r"[嗯啊呃额唔哦噢哎]", text):
+        return "ack"
+    if re.fullmatch(r"(?:那就|那)?(?:可以|好嘞|好吧|好的?|行的?|成|没问题|对的?|是的?|"
+                    r"没错|同意|确定|确认|我同意|我确认|就这么办|就按这个来)+[啊呀呢啦吧哈]?"
+                    r"(?:麻烦了|麻烦您了|麻烦你了)?", words):
+        return "yes"
+    if re.fullmatch(r"(?:不用|不必|不要|不需要|算了|不了|不行|不可以|不|不是|不对)[了啊呀呢吧]?", words):
+        return "no"
+    if re.fullmatch(r"(?:还是|那就|就是|就|我选|选|刚才)+(?:这|那)(?:个|天|个时间|个时段)[了啊呀呢吧]?"
+                    r"|(?:就)?(?:按|照)刚才的[了啊呀呢吧]?", words):
+        return "reference"
+    if re.fullmatch(r"(?:那就|那|就)?麻烦(?:您|你)?(?:了|一下|啦)", words):
+        return "polite"
+    return None
 
 
 def bank_topics(text):
@@ -179,6 +201,11 @@ def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slo
         return "clarify", None
     if re.fullmatch(r"(?:好嘞|好的?)?(?:谢谢(?:你|您)?|谢了|多谢)", words):
         return "courtesy", None
+    short = bank_short_answer(text)
+    if short in {"yes", "reference"}:
+        return "agree", None
+    if short == "no":
+        return "discard", None
     if not any(mark in text for mark in ("?", "？")):
         yes = r"(?:可以|好的?|好嘞|行|成|没问题|是的)+[的啊呀吧]?"
         same = r"(?:就(?:按这个来|这么定|这样定|它)|就?(?:这个|那个)(?:时间|时段)|就(?:这个|那个|这天))吧?"
@@ -218,7 +245,8 @@ def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slo
         return "hold", None
 
     lookup_only = bool(re.search(r"只是问|先问问|只想问|只问一下|不用.{0,5}(?:约|订)", words))
-    ranks = list(re.finditer(r"第([一二两三四1234])(?:个|项)", text))
+    rank_end = r"(?:个|项|(?=[。！!，,？?\s]*$))" if ordinal_slots is not None else r"(?:个|项)"
+    ranks = list(re.finditer(rf"第([一二两三四1234]){rank_end}", text))
     if ranks:
         rank = ranks[-1]
         start = ranks[-2].end() if len(ranks) > 1 else 0

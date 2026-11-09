@@ -38,7 +38,8 @@ async def submit_text(conversation, language, session, text, event_id=None, expe
     if (verified and reliable and language.kind == "dashscope" and action in {"unrecognized", "clarify"}
             and not snapshot["pending"] and state != "HANDOFF"):
         try:
-            suggestion = await language.intent(text, slots, hint, allow_detour=bank)
+            previous = conversation.intent_context(session) if bank else None
+            suggestion = await language.intent(text, slots, hint, allow_detour=bank, context=previous)
         except ProviderError as exc:
             with conversation.store.tx(write=True) as db:
                 emit(db, session, turn, "provider.failed", {"stage": "LLM", "code": str(exc)})

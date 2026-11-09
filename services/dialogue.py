@@ -12,7 +12,7 @@ BASELINE = {"clarification": "请告诉我具体日期或选择一个可用时�
 ID_DIGITS = str.maketrans("〇零一二三四五六七八九０１２３４５６７８９", "001234567890123456789")
 IDENTITY_DENIAL = re.compile(r"不是(?:[我您你]?本人|我自己|给我)|非本人|(?:替|帮|给)(?:别人|他人|我爸|我妈|家人)|代办")
 IDENTITY_FILLERS = re.compile(r"^(?:你好|您好|喂|嗯|啊|呃|额|唔|哦|噢|哎)+")
-IDENTITY_YES = re.compile(r"(?:是的|对的|是我|没错)+|是+的?|对+的?")
+IDENTITY_YES = re.compile(r"(?:(?:是的|对的|是我|没错)+|是+的?|对+的?)[啊呀呢]?")
 IDENTITY_SELF = (r"我+是+(?:(?:本次|这次)?预约(?:人|的)?本人|预约人)"
                  r"|(?:我+就?)?是+(?:我+)?本人|我?本人")
 IDENTITY_ASSERTION = re.compile(
