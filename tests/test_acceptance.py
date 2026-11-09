@@ -587,6 +587,40 @@ class Cases(unittest.TestCase):
         self.assertFalse(active_slot["available"])
         self.assertTrue(any(slot["start"].startswith("2026-12-04") for slot in state["slots"]))
 
+    def test_bank_time_corrections_keep_the_day_under_discussion(self):
+        self.now = datetime(2026, 11, 9, 12, tzinfo=ZONE).timestamp()
+        session, _ = self.call.open(desk="desk_" + "e" * 64, scenario="bank_card", customer_intake=True)
+        state = self.say(session, "我叫林小满，手机号19900000991", "是我本人")
+        self.assertIn("工作日下午两点到五点", state["reply"])
+        self.assertNotRegex(state["reply"], r"\d+月|第\d+个")
+        self.say(session, "嗯，周三吧。")
+        for correction in ("哎，不不不，我四点吧，四点去。", "呃，帮我改成四点吧。",
+                           "不是三点，是四点", "不是三点是四点", "我还是四点吧"):
+            with self.subTest(correction=correction):
+                old = self.say(session, "呃，三点吧。")
+                self.assertEqual(old["offer"]["target_start"], "2026-11-11T15:00:00+08:00")
+                updated = self.say(session, correction)
+                self.assertIsNotNone(updated["offer"], updated["reply"])
+                self.assertEqual(updated["offer"]["target_start"], "2026-11-11T16:00:00+08:00")
+                self.assertIn("要我帮您约这个时间吗", updated["reply"])
+                self.assertEqual(self.operations(session), [])
+        self.assertIn("那天几点", self.say(session, "换个时间吧")["reply"])
+        self.assertEqual(self.say(session, "三点半")["offer"]["target_start"], "2026-11-11T15:30:00+08:00")
+        self.assertEqual(self.say(session, "改到周四下午三点")["offer"]["target_start"], "2026-11-12T15:00:00+08:00")
+        unavailable = self.say(session, "改到晚上八点")
+        self.assertIn("那天这个时间约不上", unavailable["reply"])
+        self.assertIsNone(unavailable["offer"])
+        self.assertEqual(self.say(session, "四点")["offer"]["target_start"], "2026-11-12T16:00:00+08:00")
+        booked = self.say(session, "可以")
+        self.assertEqual(booked["appointment"]["slot"], "S202611121600")
+        self.assertEqual(len(self.operations(session)), 1)
+        changed = self.say(session, "那改成三点半吧")
+        self.assertEqual(changed["offer"]["action"], "change")
+        self.assertEqual(changed["offer"]["target_start"], "2026-11-12T15:30:00+08:00")
+        self.assertEqual(changed["appointment"], booked["appointment"])
+        self.assertEqual(self.say(session, "好")["appointment"]["slot"], "S202611121530")
+        self.assertEqual(len(self.operations(session)), 2)
+
     def test_bank_short_answers_follow_the_latest_question(self):
         desk = "desk_" + "e" * 64
         for answer in ("好的。", "嗯好啊", "那行，麻烦了", "成", "对啊", "那麻烦您一下", "那你转吧", "麻烦转一下"):

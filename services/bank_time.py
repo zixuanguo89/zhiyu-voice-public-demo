@@ -18,6 +18,24 @@ def has_calendar_day(text):
                 or any(word in text for word in (*RELATIVE, "工作日", "平日", "周末")))
 
 
+def time_revision(text):
+    parts = re.split(r"改到|改成|改为|换到|换成|还是约|还是选", text)
+    revised = parts[-1]
+    if len(parts) > 1 and re.fullmatch(r"\s*(?:那个|这个)吧?[。！!？?\s]*", revised):
+        revised = parts[-2]
+    revised = re.sub(rf"^[嗯啊呃额哦哎，,\s]*(?:那|我|我想)?还是(?=\s*(?:上午|下午|晚上)?\s*{CLOCK.pattern})",
+                     "", revised)
+    contrast = re.search(r"不是([^，,。；;]+?)[，,\s]*是\s*", revised)
+    if contrast and CLOCK.search(contrast[1]) and CLOCK.search(revised, contrast.end()):
+        return revised[contrast.end():]
+    clauses = re.split(r"[，,。；;]", revised)
+    for i in range(len(clauses) - 2, -1, -1):
+        if (re.search(r"不是|不要|不选|不约|不行|太早|太晚|不方便", clauses[i])
+                and CLOCK.search(clauses[i + 1])):
+            return "，".join(clauses[i + 1:])
+    return revised
+
+
 def number(text):
     if text.isdecimal():
         return int(text)

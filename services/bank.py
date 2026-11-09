@@ -1,7 +1,7 @@
 import re
 from datetime import datetime
 
-from services.bank_time import slot_matches
+from services.bank_time import slot_matches, time_revision
 from services.dialogue import parse
 
 BANK_SCENARIO = "bank_card"
@@ -259,10 +259,7 @@ def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slo
     if re.fullmatch(r"(?:还是)?(?:换|改)(?:另)?一个(?:吧)?[？?]?", words):
         return "change_request", None
 
-    correction = re.split(r"改到|改成|换到|换成|还是约|还是选", text)
-    time_words = correction[-1]
-    if len(correction) > 1 and re.fullmatch(r"(?:那个|这个)(?:吧)?[。！!？?]?", bank_words(time_words)):
-        time_words = correction[-2]
+    time_words = time_revision(text)
     if re.search(r"或者|或是|还是", time_words):
         return "clarify_choice", None
     if re.search(r"让我想想|我再想想|考虑一下|^不确定$", words) or (
