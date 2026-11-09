@@ -1,0 +1,7 @@
+.env
+.venv
+artifacts
+**/__pycache__
+官方资料
+*.docx
+.git

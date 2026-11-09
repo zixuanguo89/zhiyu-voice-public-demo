@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>智语外呼 · 预约服务工作台</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <aside class="rail">
+    <a class="brand" href="/" aria-label="智语外呼首页"><span class="brand-mark" aria-hidden="true">◖◗</span><span>智语外呼<small>预约服务工作台</small></span></a>
+    <p class="nav-label">工作台</p>
+    <nav aria-label="工作台">
+      <button class="nav-item active" data-view="call" aria-current="page"><span aria-hidden="true">◉</span> 打电话</button>
+      <button class="nav-item" data-view="records"><span aria-hidden="true">≡</span> 通话记录</button>
+      <button class="nav-item" data-view="booking"><span aria-hidden="true">◇</span> 预约后台</button>
+    </nav>
+    <div class="rail-foot"><span class="dot"></span><div>预约业务沙箱<small>合成数据 · 浏览器模拟</small></div></div>
+  </aside>
+  <main>
+    <header class="top"><span id="breadcrumb">工作台 / 打电话</span><span id="environment" class="chip">检测服务中</span></header>
+    <div class="page" id="call">
+      <section class="intro">
+        <p class="eyebrow">银行网点 · 预约演练</p>
+        <h1>打电话</h1>
+        <p>呼出后可以直接说「我是本人，我想预约办理 Visa 借记卡」。</p>
+        <p class="hint" id="public-notice" hidden>这是公开演示。对话会转写并留存在本浏览器工作台，请用虚构资料，避免说出真实证件号码或联系方式。</p>
+      </section>
+      <div class="call-layout">
+        <div class="side">
+          <section class="panel setup" aria-label="电话坐席">
+            <div class="phone-face" id="phone-face" data-phase="idle">
+              <div class="phone-top"><span>浏览器电话</span><span id="call-state" role="status">待呼出</span></div>
+              <div class="phone-avatar" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 13v-1a9 9 0 0 1 18 0v1m-2 6a4 4 0 0 1-4 3h-2"/>
+                  <rect x="3" y="12" width="4" height="7" rx="2"/><rect x="17" y="12" width="4" height="7" rx="2"/>
+                </svg>
+              </div>
+              <h2>海棠银行预约客服</h2>
+              <p class="phone-number">沙箱分机 <span>8001</span></p>
+              <output id="call-clock" class="call-clock" aria-label="接通时长">00:00</output>
+            </div>
+            <div class="panel-body">
+              <div id="dial-controls">
+                <label for="fault">演示模式</label>
+                <select id="fault"><option value="">正常办理</option><option value="after">提交成功后丢失回执</option><option value="before">提交前网络异常</option><option value="unknown">回执暂时无法核实</option></select>
+                <div class="dial-buttons">
+                  <button class="primary phone-button" id="start">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2c0 8.8 7.2 16 16 16a2 2 0 0 0 2-2v-3l-5-2-2 3a13 13 0 0 1-7-7l3-2-2-5Z" stroke-linejoin="round"/></svg>
+                    <span id="start-label">呼出电话</span>
+                  </button>
+                  <button id="text-start">文字办理</button>
+                </div>
+              </div>
+              <div id="call-controls" class="live-buttons" hidden>
+                <button id="mic" class="phone-button" disabled>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-3 0h6"/><path class="mic-slash" d="m4 4 16 16"/></svg>
+                  <span id="mic-label">接通语音</span>
+                </button>
+                <button id="close" class="hang-up phone-button" disabled>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 15v-4a14 14 0 0 1 18 0v4h-5l-1-3a12 12 0 0 0-6 0l-1 3H3Z" stroke-linejoin="round"/></svg>
+                  <span>挂断</span>
+                </button>
+              </div>
+              <p class="hint" id="mic-status">呼出后可使用语音通话。</p>
+              <div class="mic-input" id="mic-input" hidden>
+                <label for="mic-level">麦克风输入音量</label>
+                <meter id="mic-level" min="0" max="1" value="0"></meter>
+                <p class="hint" id="mic-input-hint" role="status"></p>
+              </div>
+              <details id="compose-panel" hidden>
+                <summary>改用文字交谈</summary>
+                <form id="compose" class="compose">
+                  <label class="sr-only" for="utterance">输入消息</label>
+                  <input id="utterance" placeholder="输入消息" maxlength="500" autocomplete="off" disabled>
+                  <button type="submit" class="primary" id="send" disabled>发送</button>
+                </form>
+              </details>
+            </div>
+          </section>
+          <section class="panel call-brief" aria-label="当前通话">
+            <div class="panel-head"><div><h2>当前通话</h2><p id="call-meta">尚未呼出</p></div><span id="stage" class="chip">待呼出</span></div>
+            <div class="panel-body">
+              <p class="call-reply" id="call-response" aria-live="polite">接通后，这里会显示客服的最新回复。</p>
+              <p class="partial" id="partial" hidden></p>
+              <div class="actions cancel-actions" id="cancel-actions" hidden>
+                <button id="confirm-cancel" class="cancel-submit" type="button">确认取消预约</button>
+                <button id="keep-appointment" type="button">保留原预约</button>
+              </div>
+              <button class="link-btn" id="open-current-record" disabled>打开本次通话记录 <span aria-hidden="true">↗</span></button>
+            </div>
+          </section>
+        </div>
+        <aside class="panel scenario-card" aria-labelledby="scenario-title">
+          <div class="scenario-hero">
+            <span class="chip">演示案例</span>
+            <h2 id="scenario-title">Visa 借记卡到店预约</h2>
+            <p>你准备出国交流，想先到银行网点提交 Visa 借记卡申请。工作日白天有课，你希望先问清到店要带什么，再选一个方便的时间。</p>
+          </div>
+          <div class="panel-body">
+            <dl class="scenario-facts">
+              <div><dt>办理网点</dt><dd>海棠银行科创支行</dd></div>
+              <div><dt>本次目标</dt><dd>约到一个可用时段，拿到预约编号</dd></div>
+            </dl>
+            <h3>可以这样和客服说</h3>
+            <ol class="scenario-steps">
+              <li><strong>说明来意</strong><span>「您好，我是本人，我想预约办理 Visa 借记卡。」</span></li>
+              <li><strong>询问材料</strong><span>「我到店需要带什么材料？」</span></li>
+              <li><strong>选择时段</strong><span>可以直接问「那天是几点来着？」报出你想问的日期，也可以说「改成第二个时段」。</span></li>
+              <li><strong>确认办理</strong><span>客服问「要我帮您约这个时间吗？」时，说「可以」或「就这个时间吧」。</span></li>
+            </ol>
+            <div class="scenario-result">
+              <strong>完成后看哪里</strong>
+              <p>客服会播报预约编号、到店时段和网点。打开「预约后台」，核对预约台账、库存变化和 AI 的业务操作单。</p>
+              <p>已预约后，也可以说「帮我把这个预约取消掉」。核对后说「确认取消」，或在当前通话里点「确认取消预约」。</p>
+            </div>
+            <p class="hint scenario-note">虚构网点与合成客户。预约用于到店提交申请，发卡和费用由网点现场审核及说明。</p>
+          </div>
+        </aside>
+      </div>
+    </div>
+    <div class="page" id="records" hidden>
+      <section class="intro"><p class="eyebrow">会话留存</p><h1>通话记录</h1><p>选择一通电话查看对话。通话中的记录会自动更新。</p></section>
+      <div class="records-layout">
+        <section class="panel record-list">
+          <div class="panel-head"><div><h2>最近通话</h2><p>本浏览器工作台</p></div></div>
+          <div class="panel-body" id="record-list"></div>
+          <div class="panel-body"><button id="older-records" hidden>更早的通话</button></div>
+        </section>
+        <section class="panel record-detail">
+          <div class="panel-head"><div><h2 id="record-title">选择一通电话</h2><p id="record-meta">通话转写和结果会保存在这里</p></div><span class="chip" id="record-status" hidden></span></div>
+          <div id="messages" class="messages" role="log" aria-label="通话转写"></div>
+          <p class="record-partial hint" id="record-partial" hidden></p>
+          <details id="record-evidence" class="record-evidence" hidden>
+            <summary>查看办理证据与质检</summary>
+            <div class="evidence-columns">
+              <div><h3>事件时间线</h3><div class="timeline" id="events"></div></div>
+              <div><h3>质检报告</h3><div id="quality"></div><button id="semantic">运行云端语义评审</button></div>
+            </div>
+          </details>
+        </section>
+      </div>
+    </div>
+    <div class="page" id="booking" hidden>
+      <section class="intro"><p class="eyebrow">预约业务沙箱</p><h1>预约后台</h1><p>查看真实写入沙箱的预约、可用时段，以及 AI 每一次查询、确认和提交的结果。</p></section>
+      <div class="booking-top">
+        <section class="panel">
+          <div class="panel-head"><div><h2>预约台账</h2><p>当前浏览器工作台的合成客户</p></div></div>
+          <div id="booking-table" class="panel-body table-scroll"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><div><h2>时段库存</h2><p>随改期与取消更新</p></div></div>
+          <div id="booking-slots" class="panel-body"></div>
+        </section>
+      </div>
+      <section class="panel booking-section">
+        <div class="panel-head"><div><h2>业务操作单</h2><p>提交状态、调用次数与回执</p></div></div>
+        <div id="booking-operations" class="panel-body table-scroll"></div>
+      </section>
+      <section class="panel booking-section">
+        <div class="panel-head"><div><h2>AI 办理轨迹</h2><p>从预约查询到结构化回写</p></div></div>
+        <div id="booking-activity" class="panel-body timeline"></div>
+      </section>
+      <section class="panel booking-section">
+        <div class="panel-head"><div><h2>人工工单</h2><p>客户主动转人工时生成</p></div></div>
+        <div id="booking-handoffs" class="panel-body table-scroll"></div>
+      </section>
+      <details class="panel strategy-panel"><summary>策略与评测</summary>
+      <section class="panel admin">
+        <div class="panel-head"><div><h2>控制台权限</h2><p>请输入启动窗口所提示文件中的本次运行口令，或已配置的管理员口令。</p></div></div>
+        <form id="admin-form" class="panel-body actions"><label class="sr-only" for="admin-key">管理员口令</label><input id="admin-key" type="password" autocomplete="off" placeholder="管理员口令" required><button class="primary">解锁</button></form>
+      </section>
+      <div id="admin-content" hidden>
+        <section class="panel admin"><div class="panel-head"><div><h2>评测任务</h2><p id="job-status" aria-live="polite">等待运行</p></div><div class="actions"><button id="regression">运行回归</button><button class="primary" id="evolve">生成并评测候选</button></div></div><pre id="job-result" hidden></pre></section>
+        <section class="panel admin"><div class="panel-head"><div><h2>策略版本</h2><p id="active-policy">读取中</p></div></div><div class="panel-body" id="policies"></div></section>
+        <section class="panel admin"><div class="panel-head"><h2>版本操作记录</h2></div><div class="panel-body" id="history"></div></section>
+      </div>
+      </details>
+    </div>
+  </main>
+  <div class="toast" id="notice" role="status" hidden></div>
+</body>
+</html>

@@ -1,0 +1,7 @@
+[build]
+builder = "DOCKERFILE"
+
+[deploy]
+startCommand = "/bin/sh -c 'PUBLIC_DEMO=1 ARTIFACT_DIR=/data exec python -m services.api'"
+healthcheckPath = "/health"
+healthcheckTimeout = 120

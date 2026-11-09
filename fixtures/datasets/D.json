@@ -1,0 +1,4 @@
+[
+ {"id":"d-clarify","family":"vague-week","entity":"D100","source":"development-author","turns":["改到下周有空的时候"],"state":"OFFERING","slot":"S1","expected_phrase":"日期和时间"},
+ {"id":"d-cancel","family":"explicit-cancellation","entity":"D101","source":"development-author","turns":["我要取消预约","确认取消"],"state":"COMPLETED","slot":"S1","status":"canceled"}
+]

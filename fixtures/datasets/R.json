@@ -1,0 +1,4 @@
+[
+ {"id":"r-override","family":"revise-before-confirmation","entity":"R100","source":"regression-author","turns":["改到S2","不要S2，改到S3","确认改期"],"state":"COMPLETED","slot":"S3","version":2},
+ {"id":"r-withdraw","family":"withdraw-without-canceling","entity":"R101","source":"regression-author","turns":["选S2","算了不改了"],"state":"COLLECTING","slot":"S1","version":1}
+]

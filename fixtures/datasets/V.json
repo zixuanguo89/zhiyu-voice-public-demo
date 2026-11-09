@@ -1,0 +1,4 @@
+[
+ {"id":"v-afternoon","family":"unspecified-afternoon","entity":"V100","source":"validation-author","turns":["下午吧"],"state":"OFFERING","slot":"S1","expected_phrase":"具体"},
+ {"id":"v-inquire","family":"read-only-overview","entity":"V101","source":"validation-author","turns":["请查询我的预约"],"state":"OFFERING","slot":"S1","version":1}
+]

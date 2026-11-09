@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","event_id","session_id","turn_id","authoritative_sequence","event_type","occurred_at","policy_version","payload"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "event_id": {"type":"string","pattern":"^evt_[a-f0-9]{32}$"},
+    "session_id": {"type":"string","pattern":"^ses_[a-f0-9]{32}$"},
+    "turn_id": {"type":"integer","minimum":0},
+    "authoritative_sequence": {"type":"integer","minimum":1},
+    "event_type": {"type":"string","pattern":"^[a-z]+(\\.[a-z_]+)+$"},
+    "occurred_at": {"type":"string","format":"date-time"},
+    "policy_version": {"type":"string","minLength":1},
+    "payload": {"type":"object"}
+  }
+}

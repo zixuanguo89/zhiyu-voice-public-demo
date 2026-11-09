@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation_id","session_id","confirmation_id","intent_revision","scope","appointment_id","action","target_slot","target_start","expected_version"],
+  "properties": {
+    "operation_id":{"type":"string","minLength":1}, "session_id":{"type":"string","minLength":1},
+    "confirmation_id":{"type":"string","minLength":1},"intent_revision":{"type":"integer","minimum":1},
+    "scope":{"type":"string","minLength":1},"appointment_id":{"type":"string","minLength":1},
+    "action":{"enum":["book","change","cancel"]},"target_slot":{"type":["string","null"]},
+    "target_start":{"type":["string","null"],"format":"date-time"},
+    "expected_version":{"type":"integer","minimum":0}
+  },
+  "if":{"properties":{"action":{"const":"cancel"}}},
+  "then":{"properties":{"target_slot":{"type":"null"},"target_start":{"type":"null"},"expected_version":{"minimum":1}}},
+  "else":{"properties":{"target_slot":{"type":"string","minLength":1},"target_start":{"type":"string"}}},
+  "allOf":[{"if":{"properties":{"action":{"const":"change"}}},"then":{"properties":{"expected_version":{"minimum":1}}}}]
+}
