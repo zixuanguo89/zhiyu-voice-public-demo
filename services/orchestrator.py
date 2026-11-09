@@ -10,7 +10,7 @@ from services.business import Rejection, Unknown, ZONE
 from services.bank import (BANK_APPOINTMENT, BANK_ASK_PREFERENCE, BANK_BRANCH, BANK_CHECKING, BANK_CONFIRM,
                            BANK_CONFIRM_FALLBACK, BANK_CONFIRM_HELP, BANK_DETOUR, BANK_FAQ, BANK_HANDOFF,
                            BANK_HANDOFF_QUESTION, BANK_NO_MATCH, BANK_OPENING, BANK_SCENARIO, BANK_TIME_OR_HANDOFF,
-                           bank_availability, bank_intent, bank_short_answer, bank_slot_offer, bank_slot_time,
+                           bank_availability, bank_intent, bank_list_reference, bank_short_answer, bank_slot_offer, bank_slot_time,
                            bank_space, bank_topics, bank_words, is_bank_space)
 from services.bank_time import slot_matches
 from services.dialogue import (BASELINE, OPENING, POLICY_ID, SPOKEN_OPENING, SPOKEN_RETRY,
@@ -244,7 +244,8 @@ class Conversation:
         question = previous.get("question")
         short = bank_short_answer(text) if bank else None
         if short and question in {"handoff", "time_or_handoff", "paused"}:
-            if reliable and short in {"yes", "polite"} and question == "handoff":
+            if reliable and ((question == "handoff" and short in {"yes", "polite", "transfer"}) or
+                             (question == "time_or_handoff" and short == "transfer")):
                 action = "handoff"
             elif reliable and (short == "no" or question == "paused"):
                 self._say(db, row, "好，有需要您再跟我说。", question="paused")
@@ -255,8 +256,9 @@ class Conversation:
                     prompt = "好，有需要您再跟我说。"
                 self._say(db, row, prompt, question=question)
                 return
-        if question == "handoff" and action in {"hold", "courtesy"}:
-            self._say(db, row, f"好，您慢慢考虑。{BANK_HANDOFF_QUESTION}", question="handoff")
+        if question == "handoff" and action in {"hold", "courtesy", "continue", "off_topic"}:
+            lead = target if action == "off_topic" else "好，您慢慢考虑。" if action != "continue" else ""
+            self._say(db, row, lead + BANK_HANDOFF_QUESTION, question="handoff")
             return
         if bank and reliable and action in {"unrecognized", "clarify"} and (suggestion or {}).get("intent") == "off_topic":
             action, target = "off_topic", BANK_DETOUR
@@ -287,13 +289,33 @@ class Conversation:
             self._invalidate(db, row, "REVERIFY")
             db.execute("UPDATE sessions SET scope=NULL,verified_until=NULL WHERE id=?", (session,))
             binding = db.execute("SELECT expected_scope FROM desk_calls WHERE session=?", (session,)).fetchone()
+            intake = db.execute("SELECT * FROM customer_intakes WHERE session=?", (session,)).fetchone()
+            if intake and intake_stage(intake) == "confirm":
+                correction = "刚才哪项有误，是姓名还是手机号？"
+                words = bank_words(text)
+                unclear_correction = re.fullmatch(r"不对[啊呀呢]?|说错了|有一项不对", words)
+                if question in {"identity", "identity_correction"} and unclear_correction:
+                    self._say(db, row, correction, "VERIFYING", question="identity_correction")
+                    return
+                if question in {"identity", "identity_correction"} and not denies_spoken_identity(text):
+                    suffix = r"(?:不对|有误|错了)" + ("?" if question == "identity_correction" else "")
+                    if reliable and re.fullmatch(r"(?:姓名|名字|全名)" + suffix, words):
+                        db.execute("UPDATE customer_intakes SET name=NULL WHERE session=?", (session,))
+                        self._say(db, row, "那麻烦您再说一下正确的全名。", "VERIFYING", question="name")
+                        return
+                    if reliable and re.fullmatch(r"(?:手机号|手机号码|号码|电话|尾号)" + suffix, words):
+                        db.execute("UPDATE customer_intakes SET phone_key=NULL,phone_tail=NULL WHERE session=?", (session,))
+                        self._say(db, row, "那麻烦您再报一下完整的 11 位手机号。", "VERIFYING", question="phone")
+                        return
+                    if question == "identity_correction" and (not reliable or not (customer_phone(text) or customer_name(text))):
+                        self._say(db, row, correction, "VERIFYING", question="identity_correction")
+                        return
             identity_no = question == "identity" and re.fullmatch(r"不(?:是)?[的啊呀呢]?", bank_words(text))
             if action == "refuse" or (binding and not detour and (identity_no or denies_spoken_identity(text))):
                 emit(db, session, row["turn"], "identity.rejected", {"code": "NOT_VERIFIED"})
                 reply = f"明白，那我先不往下办了。{BANK_HANDOFF_QUESTION}" if bank else "已停止办理。如需协助，可以转人工。"
                 self._say(db, row, reply, "VERIFYING", **({"question": "handoff"} if bank else {}))
                 return
-            intake = db.execute("SELECT * FROM customer_intakes WHERE session=?", (session,)).fetchone()
             follow_up = ""
             appointment = None
             try:
@@ -371,11 +393,14 @@ class Conversation:
             reply = "好，那咱们先不办，您的预约这次没有变动。" if bank else "已放弃本次办理，预约未因此变更。"
             self._say(db, row, reply, "COLLECTING", **({"question": "paused"} if bank else {}))
             return
+        reference = bank_list_reference(text, choice_ids) if bank else None
         if short == "reference" and choice_ids and not previous.get("confirmation_id"):
-            if len(choice_ids) != 1 or not reliable:
+            reference = choice_ids[0] if len(choice_ids) == 1 else ""
+        if reference is not None:
+            if not reference or not reliable:
                 self._say(db, row, "您指的是哪个时段？说第几个或者具体几点都行。", slot_options=choice_ids)
                 return
-            text = choice_ids[0]
+            text = reference
             action = "choose"
         if action in {"confirm", "agree"}:
             self._confirm(db, row, scope, bank_words(text) if bank else text, reliable, target, bank,

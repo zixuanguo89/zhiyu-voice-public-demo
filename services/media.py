@@ -10,7 +10,7 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioResampler
 
 from services.business import Rejection, ZONE
-from services.bank import BANK_INTENT_HINT, BANK_SCENARIO, bank_intent
+from services.bank import BANK_INTENT_HINT, BANK_SCENARIO, bank_intent, bank_list_reference, bank_short_answer
 from services.dialogue import parse, redacted
 from services.providers import ProviderError, recognize, synthesize
 from services.quality import save_report
@@ -37,12 +37,15 @@ async def submit_text(conversation, language, session, text, event_id=None, expe
     suggestion = None
     if (verified and reliable and language.kind == "dashscope" and action in {"unrecognized", "clarify"}
             and not snapshot["pending"] and state != "HANDOFF"):
-        try:
-            previous = conversation.intent_context(session) if bank else None
-            suggestion = await language.intent(text, slots, hint, allow_detour=bank, context=previous)
-        except ProviderError as exc:
-            with conversation.store.tx(write=True) as db:
-                emit(db, session, turn, "provider.failed", {"stage": "LLM", "code": str(exc)})
+        previous = conversation.intent_context(session) if bank else None
+        contextual = previous is not None and (
+            bank_short_answer(text) or bank_list_reference(text, previous["offered_slots"]) is not None)
+        if not contextual:
+            try:
+                suggestion = await language.intent(text, slots, hint, allow_detour=bank, context=previous)
+            except ProviderError as exc:
+                with conversation.store.tx(write=True) as db:
+                    emit(db, session, turn, "provider.failed", {"stage": "LLM", "code": str(exc)})
     applied = conversation.submit(session, text, event_id, turn, suggestion, reliable, auto=False)
     if applied:
         await asyncio.sleep(0)

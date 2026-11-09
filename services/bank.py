@@ -106,7 +106,25 @@ def bank_short_answer(text):
         return "reference"
     if re.fullmatch(r"(?:那就|那|就)?麻烦(?:您|你)?(?:了|一下|啦)", words):
         return "polite"
+    if re.fullmatch(r"(?:好(?:的)?)?(?:那就|那|就)?(?:麻烦|请)?(?:您|你)?(?:帮我)?"
+                    r"转(?:吧|一下(?:吧)?|过去吧)", words):
+        return "transfer"
     return None
+
+
+def bank_list_reference(text, offered_slots):
+    """Resolve order words against the list the caller actually heard."""
+    if not offered_slots or any(mark in text for mark in ("?", "？")):
+        return None
+    words = bank_words(text)
+    match = re.fullmatch(r"(?:那就|就|选|我选)*(最后|最早|最晚|头|前面|后面|前|后)"
+                         r"的?(?:那|这|一)?个[吧啊呀]?", words)
+    if not match:
+        return None
+    position = match[1]
+    if position in {"前面", "后面", "前", "后"} and len(offered_slots) > 2:
+        return ""
+    return offered_slots[-1] if position in {"最后", "最晚", "后面", "后"} else offered_slots[0]
 
 
 def bank_topics(text):

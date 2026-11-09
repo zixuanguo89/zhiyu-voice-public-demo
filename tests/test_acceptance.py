@@ -580,7 +580,7 @@ class Cases(unittest.TestCase):
 
     def test_bank_short_answers_follow_the_latest_question(self):
         desk = "desk_" + "e" * 64
-        for answer in ("好的。", "嗯好啊", "那行，麻烦了", "成", "对啊", "那麻烦您一下"):
+        for answer in ("好的。", "嗯好啊", "那行，麻烦了", "成", "对啊", "那麻烦您一下", "那你转吧", "麻烦转一下"):
             with self.subTest(answer=answer):
                 session, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
                 self.say(session, "我叫林小满，手机号19900000991", "不是")
@@ -607,6 +607,28 @@ class Cases(unittest.TestCase):
         self.assertIsNone(self.call.snapshot(session)["offer"])
         self.say(session, "周六下午有空吗")
         self.assertIn("换个时间，还是", self.say(session, "好的")["reply"])
+
+    def test_bank_short_corrections_and_order_words_keep_their_context(self):
+        desk = "desk_" + "e" * 64
+        session, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
+        self.say(session, "我叫林小满，手机号19900000991")
+        self.assertIn("姓名还是手机号", self.say(session, "不对")["reply"])
+        self.assertFalse(self.say(session, "好")["verified"])
+        self.assertEqual(self.say(session, "尾号")["intake_stage"], "phone")
+        self.assertFalse(self.say(session, "是本人")["verified"])
+        corrected = self.say(session, "19900000992")
+        self.assertIn("林小满", corrected["reply"])
+        self.assertIn("0 9 9 2", corrected["reply"])
+        self.assertEqual(self.say(session, "名字不对")["intake_stage"], "name")
+        self.assertIn("林小雨", self.say(session, "林小雨")["reply"])
+        state = self.say(session, "对啊")
+        self.assertTrue(state["verified"])
+        menu = [slot["id"] for slot in state["slots"] if slot["available"]][:4]
+        self.assertGreater(len(menu), 2)
+        self.assertIsNone(self.say(session, "后面那个")["offer"])
+        offer = self.say(session, "最后那个")["offer"]
+        self.assertEqual(offer["target_slot"], menu[-1])
+        self.assertEqual(self.say(session, "就按刚才的")["appointment"]["slot"], menu[-1])
 
     def test_connected_voice_session_outlives_inactive_session_expiry(self):
         config = self.settings()
