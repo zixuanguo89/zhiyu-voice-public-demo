@@ -7,6 +7,8 @@ CHINESE_NUMBERS.update({"〇": 0, "两": 2})
 NUMBER = r"(?:\d{1,2}|[零〇一二两三四五六七八九十]{1,3})"
 DATE = re.compile(rf"(?:(?P<month>{NUMBER})月|(?P<relative_month>这个月|本月|下个月|下月))?(?P<day>{NUMBER})[日号]")
 WEEKDAY = re.compile(r"(?P<week>下下|下|这|本|上)?(?:个)?(?:周|星期)(?P<day>[一二三四五六日天末1234567])")
+WEEK_RANGE = re.compile(r"(?P<week>下下|下|这|本|上)(?:个)?(?:周|星期)")
+WEEKDAY_RANGE = re.compile(r"(?P<week>下下|下|这|本|上)?(?:个)?周一(?:到|至)(?:周)?五")
 RELATIVE = {"今天": 0, "明天": 1, "后天": 2, "大后天": 3, "昨天": -1}
 CLOCK = re.compile(rf"({NUMBER})(?:[:：](\d{{2}})|点(?:钟|整|半|{NUMBER}分?)?)")
 
@@ -24,8 +26,11 @@ def number(text):
 
 def slot_matches(text, slots, today):
     """Filter real inventory using the calendar words the caller actually said."""
+    text = WEEKDAY_RANGE.sub(lambda match: f'{match["week"]}周工作日' if match["week"] else "工作日", text)
+    workdays = any(word in text for word in ("工作日", "平日"))
     dates = list(DATE.finditer(text))
     weeks = list(WEEKDAY.finditer(text))
+    week_range = WEEK_RANGE.search(text) if not weeks else None
     relative = re.findall(r"大后天|今天|明天|后天|昨天", text)
     if len(dates) + len(weeks) + len(relative) > 1:
         return None
@@ -33,16 +38,18 @@ def slot_matches(text, slots, today):
     week = weeks[0] if weeks else None
     clock = CLOCK.search(text)
     period = next((word for word in ("上午", "早上", "中午", "下午", "晚上") if word in text), None)
-    if not (date_match or week or relative or clock or period):
+    if not (date_match or week or week_range or relative or clock or period or workdays):
         return None
 
     days = None
     if relative:
         days = {today + timedelta(days=RELATIVE[relative[0]])}
-    elif week:
-        offset = {"下": 1, "下下": 2, "上": -1}.get(week["week"], 0)
+    elif week or week_range:
+        offset = {"下": 1, "下下": 2, "上": -1}.get((week or week_range)["week"], 0)
         monday = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
-        if week["day"] == "末":
+        if not week:
+            days = {monday + timedelta(days=day) for day in range(7)}
+        elif week["day"] == "末":
             days = {monday + timedelta(days=day) for day in (5, 6)}
         else:
             weekday = 7 if week["day"] in "日天" else number(week["day"])
@@ -74,6 +81,8 @@ def slot_matches(text, slots, today):
     matching = []
     for slot in slots:
         start = datetime.fromisoformat(slot["start"])
+        if workdays and start.weekday() >= 5:
+            continue
         if days is not None and start.date() not in days:
             continue
         if day is not None and (start.day != day or month is not None and start.month != month):

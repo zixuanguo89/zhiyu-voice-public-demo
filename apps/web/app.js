@@ -414,18 +414,19 @@ function renderBooking(data) {
   const operationStates = {PREPARED:"待提交",SENT:"已提交",UNKNOWN:"待核实",SUCCEEDED:"成功",REJECTED:"拒绝"};
   renderTable("booking-table",["预约","业务与网点","客户","当前时段","状态","版本"],data.appointments.map((a) => [
     a.id,a.branch ? a.service + " · " + a.branch : a.service,
-    customerLabel(a) || (a.branch ? "演示客户 " + a.owner : a.owner),a.slot + " · " + formatSlot(a),
+    customerLabel(a) || (a.branch ? "演示客户 " + a.owner : a.owner),a.branch ? formatSlot(a) : a.slot + " · " + formatSlot(a),
     node("span",a.status === "active" ? "有效" : "已取消","chip"),a.version
   ]),"首次呼出后会创建本工作台的预约数据。");
   $("booking-slots").replaceChildren(...(data.slots.length ? data.slots.map((slot) => {
     const row = node("div",undefined,"stock-row");
-    row.append(node("strong",slot.id),node("span",formatSlot(slot) + (slot.branch ? " · 银行网点" : "")),
+    row.append(node("strong",slot.branch ? "银行网点" : slot.id),node("span",formatSlot(slot)),
       node("span",slot.available ? "可预约" : "已占用",slot.available ? "chip" : "chip warn"));
     return row;
   }) : [node("p","暂无时段。","hint")]));
   renderTable("booking-operations",["操作","预约","请求","处理状态","发送次数","回执","来源"],data.operations.map((op) => [
     op.operation_id.slice(-8),op.request.appointment_id,
-    op.request.action === "cancel" ? "取消预约" : (op.request.action === "book" ? "新建预约 · " : "改至 ") + op.request.target_slot,
+    op.request.action === "cancel" ? "取消预约" : (op.request.action === "book" ? "新建预约 · " : "改至 ") +
+      formatSlot({start:op.request.target_start}),
     node("span",operationStates[op.state] || op.state,op.state === "SUCCEEDED" ? "chip" : "chip warn"),
     op.attempts,op.receipt?.receipt_id?.slice(-8) || op.receipt?.code || "待返回",openRecordButton(op.session_id)
   ]),"AI 尚未提交预约操作。");
@@ -790,6 +791,9 @@ async function init() {
     if (features.public_demo) {
       document.querySelector(".strategy-panel").hidden = true;
       $("public-notice").hidden = false;
+      if (features.persistent_storage) {
+        $("public-notice").textContent = "公网演示请用虚构资料。预约和通话记录保存在云端，同一浏览器可再次查看。";
+      }
     }
     $("mic-status").textContent = features.microphone ? "可开启麦克风进行语音通话。" : "云语音待配置，当前可使用文本。";
     if (credential) {

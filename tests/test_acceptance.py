@@ -17,8 +17,9 @@ import jsonschema
 from fastapi.testclient import TestClient
 
 from services.api import create_app
-from services.business import Rejection, Sandbox, Unknown
+from services.business import Rejection, Sandbox, Unknown, ZONE
 from services.config import Settings
+from services.desk import CallDesk
 from services.dialogue import BASELINE
 from services.evolution import Evolution, check_config, dataset, gate, paired_delta, verify_partitions
 from services.media import MediaCall
@@ -501,8 +502,10 @@ class Cases(unittest.TestCase):
             confirmation = a("手机号是" + phone)
             self.assertEqual(confirmation["intake_stage"], "confirm")
             self.assertIn("尾号 0 9 9 1", confirmation["reply"])
-            self.assertTrue(a("是我本人")["verified"])
-            self.assertEqual(a("我选第一个")["offer"]["target_slot"], "S1")
+            verified = a("是我本人")
+            self.assertTrue(verified["verified"])
+            first_slot, second_slot = [s["id"] for s in verified["slots"][:2]]
+            self.assertEqual(a("我选第一个")["offer"]["target_slot"], first_slot)
             first = a("确认预约")["appointment"]["id"]
             trail = client.get(path + "/events", headers=auth).json()
             self.assertNotIn(phone, json.dumps(trail, ensure_ascii=False))
@@ -513,8 +516,8 @@ class Cases(unittest.TestCase):
             self.assertEqual(b("我是林小雨，手机号是19900000991")["intake_stage"], "confirm")
             self.assertTrue(b("是的，我想预约办理借记卡")["verified"])
             self.assertIn("无法访问", b("查一下预约编号 " + first)["reply"])
-            self.assertEqual(b("我选 S1")["offer"], None)
-            self.assertEqual(b("我选 S2")["offer"]["target_slot"], "S2")
+            self.assertEqual(b("我选 " + first_slot)["offer"], None)
+            self.assertEqual(b("我选 " + second_slot)["offer"]["target_slot"], second_slot)
             second = b("确认预约")["appointment"]["id"]
             self.assertNotEqual(first, second)
             self.assertTrue(client.post(path + "/close", headers=auth).is_success)
@@ -534,6 +537,45 @@ class Cases(unittest.TestCase):
                                          second: ("林小雨", "0991", "active")})
             other_desk = {"X-Desk-Token": "desk_" + "b" * 64}
             self.assertEqual(client.get("/api/desk/booking", headers=other_desk).json()["appointments"], [])
+
+    def test_bank_rolling_schedule_handles_declined_times_and_rebooking(self):
+        self.now = datetime(2026, 11, 9, 15, 15, tzinfo=ZONE).timestamp()
+        desk = "desk_" + "e" * 64
+        session, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
+        state = self.say(session, "我叫林小满，手机号19900000991", "是我本人")
+        starts = [datetime.fromisoformat(slot["start"]) for slot in state["slots"]]
+        self.assertEqual(len(starts), 57)
+        self.assertTrue(all(when.weekday() < 5 and 14 <= when.hour < 17 and when.minute in (0, 30)
+                            for when in starts))
+        self.assertEqual(starts[0].isoformat(), "2026-11-09T15:30:00+08:00")
+        self.assertEqual(starts[-1].day, 20)
+        self.assertEqual(self.say(session, "我选第一个")["offer"]["target_start"], starts[0].isoformat())
+        declined = self.say(session, "这几个时间我都没空")
+        self.assertIn("哪天下午方便", declined["reply"])
+        self.assertIsNone(declined["offer"])
+        self.assertEqual(self.say(session, "可以")["appointment"]["status"], "unbooked")
+        self.assertIn("转人工", self.say(session, "周六下午有空吗")["reply"])
+        self.assertIn("11月16号", self.say(session, "这些时间都不合适，下周的工作日下午呢")["reply"])
+        offer = self.say(session, "下周二下午三点半有空吗")["offer"]
+        self.assertEqual(offer["target_start"], "2026-11-17T15:30:00+08:00")
+        booked = self.say(session, "就这个时间吧")["appointment"]
+        self.assertEqual(booked["slot"], offer["target_slot"])
+        self.assertEqual(self.say(session, "改到下周三下午四点")["offer"]["action"], "change")
+        declined = self.say(session, "这些时间我都没时间")
+        self.assertIn("原来的预约先给您保留", declined["reply"])
+        self.assertIsNone(declined["offer"])
+        self.assertEqual(self.say(session, "好")["appointment"], booked)
+
+        self.now = datetime(2026, 11, 24, 12, tzinfo=ZONE).timestamp()
+        stock = CallDesk(self.call).booking(desk)["slots"]
+        self.assertTrue(any(slot["start"].startswith("2026-12-04") for slot in stock))
+        reopened, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
+        state = self.say(reopened, "我叫林小满，手机号19900000991", "是我本人")
+        self.assertEqual(state["appointment"], booked)
+        self.assertIn("11月17号下午3点半", state["reply"])
+        active_slot = next(slot for slot in state["slots"] if slot["id"] == booked["slot"])
+        self.assertFalse(active_slot["available"])
+        self.assertTrue(any(slot["start"].startswith("2026-12-04") for slot in state["slots"]))
 
     def test_bank_understands_natural_identity_answers(self):
         desk = "desk_" + "e" * 64

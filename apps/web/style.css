@@ -88,6 +88,7 @@ main{margin-left:220px}.top{height:62px;background:#fff;border-bottom:1px solid 
 .booking-table th{color:var(--muted);font-size:12px;font-weight:600}
 .booking-table tr:last-child td{border:0}
 .stock-row,.activity-row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+#booking-slots{max-height:350px;overflow-y:auto}
 .activity-row{grid-template-columns:auto minmax(90px,.65fr) 1fr auto}
 .stock-row:last-child,.activity-row:last-child{border-bottom:0}
 .activity-row small{color:var(--muted)}

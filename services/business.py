@@ -9,6 +9,9 @@ from services.bank import BANK_APPOINTMENT, BANK_BRANCH, BANK_SERVICE, is_bank_s
 from services.storage import ROOT, Store, digest, encode, ident, iso
 
 ZONE = ZoneInfo("Asia/Shanghai")
+BANK_HORIZON_DAYS = 14
+BANK_FIRST_HOUR = 14
+BANK_END_HOUR = 17
 
 
 class Rejection(Exception):
@@ -30,10 +33,25 @@ class Sandbox:
         self.clock = clock
         self.fixture = json.loads((ROOT / "fixtures/sandbox.json").read_text(encoding="utf-8"))
 
-    def seed(self, space):
+    def seed(self, space, *, rolling=False):
         now = datetime.fromtimestamp(self.clock(), ZONE)
         appointments = [["A201", "U200", "S4"]] if is_bank_space(space) else self.fixture["appointments"]
         with self.store.tx(write=True) as db:
+            if rolling:
+                db.execute("INSERT OR IGNORE INTO bank_rolling_schedule VALUES(?)", (space,))
+            if self._rolling(db, space):
+                existing = {row["start"] for row in db.execute("SELECT start FROM slots WHERE space=?", (space,))}
+                for days in range(BANK_HORIZON_DAYS):
+                    day = now + timedelta(days=days)
+                    if day.weekday() >= 5:
+                        continue
+                    for hour in range(BANK_FIRST_HOUR, BANK_END_HOUR):
+                        for minute in (0, 30):
+                            start = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                            if start > now and start.isoformat() not in existing:
+                                db.execute("INSERT INTO slots VALUES(?,?,?,1)",
+                                           (space, f"S{start:%Y%m%d%H%M}", start.isoformat()))
+                return
             for appt, owner, slot in appointments:
                 db.execute("INSERT OR IGNORE INTO appointments VALUES(?,?,?,?,1,'active')",
                            (space, appt, owner, slot))
@@ -88,17 +106,44 @@ class Sandbox:
             return self._appointment(db, space, scope, appointment)
 
     @staticmethod
-    def _slots(db, space):
-        return [dict(row) for row in db.execute("""
+    def _rolling(db, space):
+        return db.execute("SELECT 1 FROM bank_rolling_schedule WHERE space=?", (space,)).fetchone() is not None
+
+    def refresh_bank_schedule(self, space):
+        day = datetime.fromtimestamp(self.clock(), ZONE).date() + timedelta(days=BANK_HORIZON_DAYS - 1)
+        if day.weekday() >= 5:
+            day -= timedelta(days=day.weekday() - 4)
+        with self.store.tx() as db:
+            if not self._rolling(db, space):
+                return
+            latest = db.execute("SELECT MAX(start) FROM slots WHERE space=?", (space,)).fetchone()[0]
+        if not latest or latest[:10] < day.isoformat():
+            self.seed(space)
+
+    def _slots(self, db, space, include_slot=None):
+        slots = [dict(row) for row in db.execute("""
             SELECT s.id,s.start, s.capacity>COUNT(a.id) AS available FROM slots s
             LEFT JOIN appointments a ON s.space=a.space AND s.id=a.slot AND a.status='active'
             WHERE s.space=? GROUP BY s.id ORDER BY s.start
         """, (space,))]
+        if not self._rolling(db, space):
+            return slots
+        now = datetime.fromtimestamp(self.clock(), ZONE)
+        end = now.date() + timedelta(days=BANK_HORIZON_DAYS)
+        visible = []
+        for slot in slots:
+            start = datetime.fromisoformat(slot["start"])
+            if now < start and start.date() < end and start.weekday() < 5 and (
+                    BANK_FIRST_HOUR <= start.hour < BANK_END_HOUR and start.minute in (0, 30)):
+                visible.append(slot)
+            elif slot["id"] == include_slot:
+                visible.append({**slot, "available": 0})
+        return visible
 
     def slots(self, space, scope, appointment):
         with self.store.tx() as db:
-            self._appointment(db, space, scope, appointment)
-            return self._slots(db, space)
+            current = self._appointment(db, space, scope, appointment)
+            return self._slots(db, space, current["slot"])
 
     def execute(self, space, request, fault=None, attempt=1):
         if fault == "before" and attempt == 1:

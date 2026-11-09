@@ -76,6 +76,7 @@ class CallDesk:
 
     def booking(self, desk):
         branch_space = bank_space(desk)
+        self.conversation.business.refresh_bank_schedule(branch_space)
         with self.conversation.business.store.tx() as db:
             appointments = []
             for row in db.execute("""

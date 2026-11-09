@@ -48,7 +48,9 @@ def main():
         assert sum(e["event_type"] == "audio.asr_final" for e in events) == 6
         assert sum(e["event_type"] == "operation.sent" for e in events) == 1
         receipt = next(e["payload"] for e in events if e["event_type"]=="operation.receipt")
-        assert receipt["result"]["slot"] == "S2" and receipt["result"]["version"] == 1
+        offered = [e["payload"]["params"]["target_slot"] for e in events if e["event_type"]=="confirmation.offered"]
+        assert len(offered) == 2 and offered[0] != offered[1]
+        assert receipt["result"]["slot"] == offered[-1] and receipt["result"]["version"] == 1
         browser.close()
     assert not errors, errors
     args.out.mkdir(parents=True, exist_ok=True)

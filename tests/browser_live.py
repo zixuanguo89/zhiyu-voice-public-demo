@@ -25,22 +25,27 @@ from services.storage import iso
 
 def conversation_script(scenario):
     intake = ("我叫林小满。", "手机号是幺九九零零零零零九九幺。", "嗯，是的是的。")
-    if scenario == "cancel":
-        return "S3", "下午4点", intake + ("我不想办了，你帮我把这个预约取消掉吧。", "取消了吗？", "确认取消。")
     today = datetime.now(ZONE).date()
-    third_day = today + timedelta(days=3)
-    month = "这个月" if third_day.month == today.month else "下个月"
+    day = today + timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    spoken_date = f"{day.month}月{day.day}号"
+    slot = f"S{day:%Y%m%d}1530"
+    date_request = f"{spoken_date}下午三点半有空吗？"
+    if scenario == "cancel":
+        return slot, "下午3点半", intake + ("我不想办了，你帮我把这个预约取消掉吧。", "取消了吗？", "确认取消。")
     scripts = {
-        "date": ("S3", "下午4点", ("我选第一个可用时段。", f"呃，{month}{third_day.day}号可以吗？",
-                              "对了，明天会下雨吗？", "嗯，可以可以可以。")),
-        "relative": ("S2", "下午2点", ("明天还有位置吗？", "刚才那个时间能不能晚一点？", "可以，麻烦您帮我约一下。")),
-        "filtered": ("S2", "下午2点", ("上午太早，有下午的吗？", "我选第二个。", "还是选第一个吧。", "好，就这个时间。")),
+        "date": (slot, "下午3点半", ("我选第一个可用时段。", "这些时间我都没空。", date_request,
+                                   "对了，明天会下雨吗？", "嗯，可以可以可以。")),
+        "relative": (f"S{day:%Y%m%d}1430", "下午2点半", (f"{spoken_date}下午两点可以吗？",
+                     "刚才那个时间能不能晚一点？", "可以，麻烦您帮我约一下。")),
+        "filtered": (slot, "下午3点半", ("工作日下午有空吗？", "我选第二个。", date_request, "好，就这个时间。")),
     }
     slot, time_label, turns = scripts[scenario]
     return slot, time_label, intake + ("到店要带什么材料？",) + turns
 
 
-def seed_appointment(page, url):
+def seed_appointment(page, url, slot):
     desk = page.evaluate("localStorage.getItem('zhiyu.desk')")
     opened = page.request.post(url + "/api/sessions", headers={"X-Desk-Token": desk}, data={
         "scenario": "bank_card", "customer_intake": True,
@@ -49,12 +54,12 @@ def seed_appointment(page, url):
     data = opened.json()
     path = url + "/api/sessions/" + data["session_id"]
     auth = {"Authorization": "Bearer " + data["token"]}
-    for turn, text in enumerate(("我叫林小满，手机号是19900000991", "我是本人，我要办卡", "第三个吧", "确认预约")):
+    for turn, text in enumerate(("我叫林小满，手机号是19900000991", "我是本人，我要办卡", slot, "确认预约")):
         response = page.request.post(path + "/turns", headers=auth, data={
             "text": text, "event_id": "evt_" + uuid4().hex, "expected_turn": turn,
         })
         assert response.ok
-    assert response.json()["snapshot"]["appointment"]["slot"] == "S3"
+    assert response.json()["snapshot"]["appointment"]["slot"] == slot
     assert page.request.post(path + "/close", headers=auth).ok
 
 
@@ -109,7 +114,7 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(args.url, wait_until="networkidle")
             if cancel:
-                seed_appointment(page, args.url)
+                seed_appointment(page, args.url, expected_slot)
             if health["demo_faults"]:
                 page.select_option("#fault", "after")
             page.locator("#start").click()
@@ -142,6 +147,7 @@ def main():
             assert offers and any(e["event_type"] == "assistant.replied" and e["turn_id"] == offers[-1]["turn_id"]
                                   and time_label in e["payload"]["text"] for e in trail)
             if args.scenario == "date":
+                assert any(e["event_type"] == "assistant.replied" and "哪天下午方便" in e["payload"]["text"] for e in trail)
                 assert any(e["event_type"] == "assistant.replied" and "天气这边查不了" in e["payload"]["text"]
                            and time_label in e["payload"]["text"] for e in trail)
             assert sum(e["event_type"] == "operation.sent" for e in trail) == 1
@@ -158,7 +164,7 @@ def main():
             page.locator(".nav-item[data-view=booking]").click()
             expect(page.locator("#booking-table")).to_contain_text("Visa 借记卡到店办理")
             expect(page.locator("#booking-table")).to_contain_text("林小满 · 尾号 0991")
-            expect(page.locator("#booking-operations")).to_contain_text("取消预约" if cancel else f"新建预约 · {expected_slot}")
+            expect(page.locator("#booking-operations")).to_contain_text("取消预约" if cancel else "新建预约")
             if cancel:
                 expect(page.locator("#booking-table")).to_contain_text("已取消")
             page.locator(".nav-item[data-view=call]").click()

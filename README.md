@@ -24,6 +24,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 
 同一浏览器工作台内，用相同全名和手机号再次来电可查回原预约，并办理改期或取消。本机记录保存在 SQLite，重启后可继续使用。海棠银行科创支行是虚构演示网点，口头确认用于演示。请使用虚构资料。
 
+银行演示按未来两周的工作日下午 14:00 至 17:00 排班，每半小时一个预约时段。可以直接说「下周二下午三点半有空吗」。如果推荐时间都不方便，客服会询问您哪天下午有空；找不到匹配时段时可以继续换时间或转人工。
+
 ## 配置云语音
 
 1. 在阿里云百炼 **华北2（北京）** 创建或复制 API Key，确保该业务空间有权调用 Paraformer、CosyVoice 和 Qwen。 [百炼密钥管理](https://help.aliyun.com/zh/model-studio/get-api-key/)

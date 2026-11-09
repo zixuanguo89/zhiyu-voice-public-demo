@@ -13,6 +13,14 @@ BANK_CONFIRM = "我先问一下，这张卡是给您自己办的吗？回答“�
 BANK_CONFIRM_HELP = "想确认这张卡是不是给您自己办。如果是，直接回答“是”就可以了。"
 BANK_CONFIRM_FALLBACK = "这句我还没确认清楚。您可以再说一声“是”，也可以点电话页的“改用文字交谈”，输入“我是本人”。"
 BANK_CHECKING = "稍等一下，我还在查这笔预约的结果。有结果我再跟您说，您也可以转人工。"
+BANK_NO_MATCH = "目前没有这个时段。您可以换个工作日下午，也可以说‘转人工’，我帮您登记。"
+BANK_ASK_PREFERENCE = "那您哪天下午方便？大概几点也行，我帮您查。"
+DECLINED_TIMES = re.compile(
+    r"(?:都|全|一个也)(?:没(?:有)?(?:时间|空)|不(?:行|合适|方便|太方便)|来不了|去不了|赶不上|对不上)"
+    r"|(?:这些|这几个|刚才(?:说|报)的)(?:时间|时段)(?:我)?(?:没(?:有)?(?:时间|空)|不方便|不合适)"
+    r"|(?:没有一个|没一个)(?:合适|方便|能去)"
+    r"|^(?:我)?(?:没(?:有)?(?:时间|空)|去不了|来不了)(?:啊|呀|呢)?[？?]?$"
+)
 BANK_INTENT_HINT = ("这是银行借记卡到店预约。区分询问某天几点、明确选时间、要求换时间和单纯应答。"
                     "只问几点或说‘嗯’‘可以吗’时，不要猜客户选了哪个时间。只引用给出的时段。")
 BANK_DETOUR = "您说的这个我帮不上忙。"
@@ -51,13 +59,13 @@ def is_bank_space(space):
 def bank_slot_time(slot):
     time = datetime.fromisoformat(slot["start"])
     period = "上午" if time.hour < 12 else "下午"
-    minutes = f"{time.minute}分" if time.minute else ""
+    minutes = "半" if time.minute == 30 else f"{time.minute}分" if time.minute else ""
     return f"{time.month}月{time.day}号{period}{time.hour % 12 or 12}点{minutes}"
 
 
 def bank_availability(slots):
     if not slots:
-        return "这几天的时段都满了。您需要的话，我可以帮您转人工。"
+        return "目前没有可约的时段。您需要的话，我可以帮您转人工。"
     options = [f"第{number}个是{bank_slot_time(slot)}" for number, slot in enumerate(slots, 1)]
     return "我看看啊，现在还有这些时间。" + "。".join(options) + "。您看哪个方便？"
 
@@ -140,12 +148,15 @@ def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slo
     action, target = parse(text, available)
     if action in {"handoff", "refuse"}:
         return action, target
+    words = bank_words(text)
+    declined = DECLINED_TIMES.search(words)
+    if declined:
+        return "decline_times", words[declined.end():]
     detour = bank_detour(text)
     if detour:
         return "off_topic", detour
     if action == "continue":
         return action, target
-    words = bank_words(text)
     if re.search(r"(?:跟|和|找|转)(?:个)?真人", words):
         return "handoff", None
     cancellation = bank_cancellation(words)
@@ -242,7 +253,8 @@ def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slo
             return "change_request", None
     if topics:
         return "bank_faq", topics
-    if re.search(r"(?:换|改)(?:个|一下)?(?:时间|时段|日期)|不是这个", words):
+    if re.search(r"(?:换|改)(?:个|一下)?(?:时间|时段|日期)|不是这个|"
+                 r"(?:还有|有没有|有无|有)(?:别的|其他|其它)(?:时间|时段|日期)", words):
         return "change_request", None
     if asks_time and re.search(r"那天|那个|刚才|刚刚|这个时间", words):
         return "recap_time", None
