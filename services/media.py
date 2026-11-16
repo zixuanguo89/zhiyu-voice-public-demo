@@ -42,7 +42,9 @@ async def submit_text(conversation, language, session, text, event_id=None, expe
             bank_short_answer(text) or bank_list_reference(text, previous["offered_slots"]) is not None)
         if not contextual:
             try:
-                suggestion = await language.intent(text, slots, hint, allow_detour=bank, context=previous)
+                candidates = previous.get("preferred_slots") if previous else None
+                suggestion = await language.intent(text, [slot for slot in slots if slot["id"] in candidates]
+                                                   if candidates else slots, hint, allow_detour=bank, context=previous)
             except ProviderError as exc:
                 with conversation.store.tx(write=True) as db:
                     emit(db, session, turn, "provider.failed", {"stage": "LLM", "code": str(exc)})

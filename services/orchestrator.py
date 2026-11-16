@@ -12,7 +12,7 @@ from services.bank import (BANK_AFTERNOON_WINDOW, BANK_APPOINTMENT, BANK_ASK_PRE
                            BANK_HANDOFF_QUESTION, BANK_NO_MATCH, BANK_OPENING, BANK_SCENARIO, BANK_TIME_OR_HANDOFF, BANK_WEEKDAY_WINDOW,
                            bank_availability, bank_intent, bank_list_reference, bank_short_answer, bank_slot_offer, bank_slot_time,
                            bank_space, bank_topics, bank_words, is_bank_space)
-from services.bank_time import CLOCK, has_calendar_day, slot_matches, time_revision
+from services.bank_time import CLOCK, PERIOD, has_calendar_day, slot_matches, time_revision
 from services.dialogue import (BASELINE, OPENING, POLICY_ID, SPOKEN_OPENING, SPOKEN_RETRY,
                                canonical_ids, denies_spoken_identity, parse, redacted, slot_label, spoken_identity)
 from services.customer import (CUSTOMER_OPENING, NAME_PROMPT, PHONE_PROMPT, customer_name, customer_phone,
@@ -147,8 +147,14 @@ class Conversation:
     def intent_context(self, session):
         with self.store.tx() as db:
             previous = self._last_reply(db, session)
-            question = "appointment_confirmation" if previous.get("confirmation_id") else previous.get("question")
-            return {"question": question, "offered_slots": previous.get("slot_options", [])}
+            row = self._get(db, session)
+            offered = db.execute("SELECT params FROM confirmations WHERE id=? AND status='OFFERED' AND expires>?",
+                                 (row["confirmation"], self.clock())).fetchone()
+            params = json.loads(offered["params"]) if offered else {}
+            return {"question": "appointment_confirmation" if previous.get("confirmation_id") and offered
+                    else previous.get("question"), "offered_slots": previous.get("slot_options", []),
+                    "preferred_slots": previous.get("preference_slots", []),
+                    "pending_time": params.get("target_start")}
 
     def snapshot(self, session):
         with self.store.tx() as db:
@@ -438,10 +444,6 @@ class Conversation:
             prompt = BANK_AFTERNOON_WINDOW if question == "time_preference" else BANK_ASK_PREFERENCE
             self._say(db, row, prompt, "OFFERING", **preference)
             return
-        if action == "clarify_choice":
-            self._invalidate(db, row, "INTENT_CHANGED")
-            self._say(db, row, "您可以先选定一个时间，告诉我哪天更方便，我帮您核对。", "COLLECTING")
-            return
         if action == "recap_time" and row["confirmation"] and self._bank_restate(db, row):
             return
 
@@ -470,7 +472,10 @@ class Conversation:
         revised_time = time_revision(text) if rolling else text
         same_day = rolling and not has_calendar_day(revised_time)
         keep_day = same_day and question == "time_preference"
-        keep_offer_day = bool(same_day and anchor and (CLOCK.search(revised_time) or action == "relative_time"))
+        keep_offer_day = bool(same_day and anchor and (
+            CLOCK.search(revised_time) or action == "relative_time"
+            or PERIOD.search(revised_time) and re.search(r"那天|这天|当天|刚才", revised_time)
+        ))
         matching_active_slot = active_slot
         preferred_ids = previous.get("preference_slots", [])
         if keep_day:
@@ -484,6 +489,14 @@ class Conversation:
             matching_active_slot = None
         action, target = (bank_intent(text, matching_slots, matching_active_slot, today=today, ordinal_slots=ordinal_slots)
                           if bank else parse(text, slots))
+        if action == "clarify_choice":
+            self._invalidate(db, row, "INTENT_CHANGED")
+            if (keep_day or keep_offer_day) and matching_slots:
+                self._say(db, row, "您想先查那天的几点？说一个时间，我帮您看看。", "OFFERING",
+                          question="time_preference", preference_slots=[slot["id"] for slot in matching_slots])
+            else:
+                self._say(db, row, "您可以先选定一个时间，告诉我哪天更方便，我帮您核对。", "COLLECTING")
+            return
         if action == "change_request":
             self._invalidate(db, row, "INTENT_CHANGED")
             same_day_slots = preferred_ids if keep_day else []
@@ -558,7 +571,10 @@ class Conversation:
             # A model may propose a slot, but only a fresh server-authored offer can lead to a write.
             if suggestion.get("intent") in {"query", "help"}:
                 action = suggestion["intent"]
-            elif suggestion.get("intent") == "choose" and not any(x in text for x in ("不", "或", "?", "？")):
+            elif (suggestion.get("intent") == "choose"
+                  and suggestion.get("slot") in {slot["id"] for slot in matching_slots}
+                  and (not keep_day or suggestion["slot"] in preferred_ids)
+                  and not any(x in text for x in ("不", "或", "?", "？"))):
                 action, target = "choose", suggestion.get("slot")
         if bank and not reliable and action in {"ask_time", "lookup_time", "choose", "cancel"}:
             self._say(db, row, "刚才没听清您说的是哪个时间，麻烦您再说一遍。")
@@ -586,6 +602,13 @@ class Conversation:
                 return
             if len(target) != 1:
                 options = [slot for slot in available if slot["id"] in target]
+                if rolling and not options and has_calendar_day(revised_time) and (
+                        CLOCK.search(revised_time) or PERIOD.search(revised_time)):
+                    matching_dates = slot_matches(PERIOD.sub("", CLOCK.sub("", revised_time)), available, today)
+                    day_slots = [slot for slot in available if slot["id"] in (matching_dates or ())]
+                    if day_slots and len({slot["start"][:10] for slot in day_slots}) == 1:
+                        self._bank_window(db, row, day_slots, "那天这个时间约不上。")
+                        return
                 if not options and (keep_day or keep_offer_day) and matching_slots:
                     self._bank_window(db, row, matching_slots, "那天这个时间约不上。")
                     return
@@ -661,13 +684,16 @@ class Conversation:
                      "我这边没查到有效预约。刚才选的时间也没有提交。")
             self._say(db, row, reply, "COLLECTING")
         else:
-            if bank and action == "unrecognized":
+            if rolling and question in {"time_preference", "day_preference"}:
+                reply = ("您刚才选的那天，想约几点？" if question == "time_preference" else
+                         "您哪天下午方便？可以直接说周几。")
+            elif bank and action == "unrecognized":
                 reply = "我刚才没听明白。您是想问到店要带什么，还是想查一下预约时间？"
             elif bank:
                 reply = "您可以告诉我想约哪天，或者说想选第几个时间。"
             else:
                 reply = f'{config["clarification"]} 可选时段：{listing}。'
-            self._say(db, row, reply, "OFFERING")
+            self._say(db, row, reply, "OFFERING", **preference)
 
     def _confirm(self, db, row, scope, text, reliable, target, bank, *, conversational=False):
         cf = db.execute("SELECT * FROM confirmations WHERE id=?", (row["confirmation"],)).fetchone()
@@ -681,6 +707,15 @@ class Conversation:
                 if conversational and (not cf or cf["status"] != "OFFERED"):
                     if row["state"] == "COMPLETED":
                         self._say(db, row, "好，您还有什么想问的吗？")
+                        return
+                    previous = self._last_reply(db, row["id"])
+                    question = previous.get("question")
+                    if question == "time_preference":
+                        self._say(db, row, "好，您想约那天下午几点？", "OFFERING", question=question,
+                                  preference_slots=previous.get("preference_slots", []))
+                        return
+                    if question == "day_preference":
+                        self._say(db, row, BANK_WEEKDAY_WINDOW, "OFFERING", question=question)
                         return
                     reply = "您想约哪一天？说日期或第几个都行。"
             self._say(db, row, reply, "COLLECTING" if reliable else row["state"])

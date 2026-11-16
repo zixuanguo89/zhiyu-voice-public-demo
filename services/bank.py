@@ -1,7 +1,7 @@
 import re
 from datetime import datetime
 
-from services.bank_time import slot_matches, time_revision
+from services.bank_time import AVAILABILITY_QUESTION, ambiguous_time, slot_matches, time_revision
 from services.dialogue import parse
 
 BANK_SCENARIO = "bank_card"
@@ -258,9 +258,11 @@ def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slo
         return "appointment_query", None
     if re.fullmatch(r"(?:还是)?(?:换|改)(?:另)?一个(?:吧)?[？?]?", words):
         return "change_request", None
+    if re.search(r"刚才(?:说|报)的(?:都)?有哪些(?:可约的)?(?:时间|时段)", words):
+        return "continue", None
 
     time_words = time_revision(text)
-    if re.search(r"或者|或是|还是", time_words):
+    if re.search(r"或(?:者|是)?|还是", time_words):
         return "clarify_choice", None
     if re.search(r"让我想想|我再想想|考虑一下|^不确定$", words) or (
         re.match(r"^(?:稍等|等等|等一下|等会儿)", words) and not re.search(r"改|换|选|约|还有|几点|[0-9一二三四五六七八九十][号日]", words)
@@ -289,14 +291,16 @@ def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slo
         last = -1 if "最晚" in words else 0
         return "ask_time", (available[last]["id"],) if available else ()
 
-    asks_time = bool(re.search(r"几点|什么时间|啥时候|什么时候|可以吗|能(?:约|去)|有(?:没有|空|号|位置)|还有|有上午", text))
+    asks_time = bool(AVAILABILITY_QUESTION.search(text))
     if topics and not asks_time:
         return "bank_faq", topics
     relative = re.search(r"([早晚])(?:一)?点(?:儿)?|([早晚])一些", words)
     if relative and not topics:
         return "relative_time", -1 if "早" in relative[0] else 1
     if today is not None and not re.search(r"不要|不选|不约", time_words):
-        contrast = re.split(r"(?:不行|太早|太晚|不方便)[，,。；;]*", time_words)
+        contrast = re.split(r"(?<!行)不行|太早|太晚|(?<!方)不方便", time_words)
+        if ambiguous_time(contrast[-1]):
+            return "clarify_choice", None
         slots = [*available, active_slot] if asks_time and active_slot else available
         matches = slot_matches(contrast[-1], slots, today)
         if matches is not None:

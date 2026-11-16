@@ -681,6 +681,29 @@ class Cases(unittest.TestCase):
         self.assertEqual(self.say(session, "好")["appointment"]["slot"], "S202611121530")
         self.assertEqual(len(self.operations(session)), 2)
 
+    def test_bank_availability_questions_and_followups_retain_the_date(self):
+        self.now = datetime(2026, 11, 15, 20, tzinfo=ZONE).timestamp()
+        session, _ = self.call.open(desk="desk_" + "f" * 64, scenario="bank_card", customer_intake=True)
+        self.say(session, "我叫林小满，手机号19900000991", "对，是我本人")
+        self.assertIn("那天下午", self.say(session, "下礼拜四下午")["reply"])
+        for words in ("三点半行不行", "下午三点半方不方便", "我说的是下周四下午三点半",
+                      "下周四下午，周四下午三点半", "下午三点半能不能约？"):
+            with self.subTest(words=words):
+                answer = self.say(session, words)
+                self.assertIsNotNone(answer["offer"], answer["reply"])
+                self.assertEqual(answer["offer"]["target_start"], "2026-11-19T15:30:00+08:00")
+                self.assertEqual(self.operations(session), [])
+        self.assertIn("那天这个时间约不上", self.say(session, "下周五下午五点方便吗")["reply"])
+        self.assertIn("那天", self.say(session, "啊，好的。")["reply"])
+        self.assertIn("那天", self.say(session, "三点、四点，哪个比较合适？")["reply"])
+        self.assertIsNone(self.call.snapshot(session)["offer"])
+        self.assertEqual(self.say(session, "四点行吗？")["offer"]["target_start"], "2026-11-20T16:00:00+08:00")
+        self.assertIn("那天", self.say(session, "三点半或四点，这两个合适吗？")["reply"])
+        self.assertEqual(self.say(session, "四点就好")["offer"]["target_start"], "2026-11-20T16:00:00+08:00")
+        self.assertEqual(self.operations(session), [])
+        self.assertEqual(self.say(session, "可以")["appointment"]["slot"], "S202611201600")
+        self.assertEqual(len(self.operations(session)), 1)
+
     def test_bank_short_answers_follow_the_latest_question(self):
         desk = "desk_" + "e" * 64
         for answer in ("好的。", "嗯好啊", "那行，麻烦了", "成", "对啊", "那麻烦您一下", "那你转吧", "麻烦转一下"):

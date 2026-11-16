@@ -6,11 +6,16 @@ CHINESE_NUMBERS = {digit: number for number, digit in enumerate("零一二三四
 CHINESE_NUMBERS.update({"〇": 0, "两": 2})
 NUMBER = r"(?:\d{1,2}|[零〇一二两三四五六七八九十]{1,3})"
 DATE = re.compile(rf"(?:(?P<month>{NUMBER})月|(?P<relative_month>这个月|本月|下个月|下月))?(?P<day>{NUMBER})[日号]")
-WEEKDAY = re.compile(r"(?P<week>下下|下|这|本|上)?(?:个)?(?:周|星期)(?P<day>[一二三四五六日天末1234567])")
-WEEK_RANGE = re.compile(r"(?P<week>下下|下|这|本|上)(?:个)?(?:周|星期)")
+WEEKDAY = re.compile(r"(?P<week>下下|下|这|本|上)?(?:个)?(?:周|星期|礼拜|禮拜|週)(?P<day>[一二三四五六日天末1234567])")
+WEEK_RANGE = re.compile(r"(?P<week>下下|下|这|本|上)(?:个)?(?:周|星期|礼拜|禮拜|週)")
 WEEKDAY_RANGE = re.compile(r"(?P<week>下下|下|这|本|上)?(?:个)?周一(?:到|至)(?:周)?五")
 RELATIVE = {"今天": 0, "明天": 1, "后天": 2, "大后天": 3, "昨天": -1}
 CLOCK = re.compile(rf"({NUMBER})(?:[:：](\d{{2}})|点(?:钟|整|半|{NUMBER}分?)?)")
+PERIOD = re.compile(r"上午|早上|中午|下午|晚上")
+AVAILABILITY_QUESTION = re.compile(
+    r"行不行|可不可以|能不能|方不方便|有没有|合不合适|来得及吗|(?:可以|行|方便|合适|有空|能约|能办|能去)[吗嘛么]|"
+    r"几点|什么时间|啥时候|什么时候|能(?:约|去)|有(?:空|号|位置)|还有|[？?]"
+)
 
 
 def has_calendar_day(text):
@@ -19,21 +24,33 @@ def has_calendar_day(text):
 
 
 def time_revision(text):
-    parts = re.split(r"改到|改成|改为|换到|换成|还是约|还是选", text)
+    parts = re.split(r"改到|改成|改为|换到|换成|还是约|还是选|我说的是|我的意思是", text)
     revised = parts[-1]
     if len(parts) > 1 and re.fullmatch(r"\s*(?:那个|这个)吧?[。！!？?\s]*", revised):
         revised = parts[-2]
     revised = re.sub(rf"^[嗯啊呃额哦哎，,\s]*(?:那|我|我想)?还是(?=\s*(?:上午|下午|晚上)?\s*{CLOCK.pattern})",
                      "", revised)
     contrast = re.search(r"不是([^，,。；;]+?)[，,\s]*是\s*", revised)
-    if contrast and CLOCK.search(contrast[1]) and CLOCK.search(revised, contrast.end()):
+    if contrast and (CLOCK.search(contrast[1]) or has_calendar_day(contrast[1])) and (
+            CLOCK.search(revised, contrast.end()) or has_calendar_day(revised[contrast.end():])):
         return revised[contrast.end():]
     clauses = re.split(r"[，,。；;]", revised)
     for i in range(len(clauses) - 2, -1, -1):
-        if (re.search(r"不是|不要|不选|不约|不行|太早|太晚|不方便", clauses[i])
-                and CLOCK.search(clauses[i + 1])):
+        if (re.search(r"不是|不要|不选|不约|(?<!行)不行|太早|太晚|(?<!方)不方便", clauses[i])
+                and (CLOCK.search(clauses[i + 1]) or has_calendar_day(clauses[i + 1]))):
             return "，".join(clauses[i + 1:])
     return revised
+
+
+def clock_parts(clock):
+    suffix = clock[0].split("点", 1)[-1]
+    minute_text = re.search(NUMBER, suffix) if "点" in clock[0] else None
+    minute = int(clock[2]) if clock[2] else 30 if suffix == "半" else number(minute_text[0]) if minute_text else 0
+    return number(clock[1]), minute
+
+
+def ambiguous_time(text):
+    return len({clock_parts(match) for match in CLOCK.finditer(text)}) > 1
 
 
 def number(text):
@@ -51,22 +68,23 @@ def slot_matches(text, slots, today):
     """Filter real inventory using the calendar words the caller actually said."""
     text = WEEKDAY_RANGE.sub(lambda match: f'{match["week"]}周工作日' if match["week"] else "工作日", text)
     workdays = any(word in text for word in ("工作日", "平日"))
-    dates = list(DATE.finditer(text))
-    weeks = list(WEEKDAY.finditer(text))
+    dates = {tuple(match.groupdict().values()): match for match in DATE.finditer(text)}
+    weeks = {(match["week"], match["day"].replace("天", "日")): match for match in WEEKDAY.finditer(text)}
     week_range = WEEK_RANGE.search(text) if not weeks else None
-    relative = re.findall(r"大后天|今天|明天|后天|昨天", text)
+    relative = set(re.findall(r"大后天|今天|明天|后天|昨天", text))
     if len(dates) + len(weeks) + len(relative) > 1:
         return None
-    date_match = dates[0] if dates else None
-    week = weeks[0] if weeks else None
+    date_match = next(iter(dates.values()), None)
+    week = next(iter(weeks.values()), None)
     clock = CLOCK.search(text)
-    period = next((word for word in ("上午", "早上", "中午", "下午", "晚上") if word in text), None)
+    period_match = PERIOD.search(text)
+    period = period_match[0] if period_match else None
     if not (date_match or week or week_range or relative or clock or period or workdays):
         return None
 
     days = None
     if relative:
-        days = {today + timedelta(days=RELATIVE[relative[0]])}
+        days = {today + timedelta(days=RELATIVE[next(iter(relative))])}
     elif week or week_range:
         offset = {"下": 1, "下下": 2, "上": -1}.get((week or week_range)["week"], 0)
         monday = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
@@ -88,13 +106,10 @@ def slot_matches(text, slots, today):
     if relative_month in {"下个月", "下月"}:
         month_start = (month_start + timedelta(days=32)).replace(day=1)
 
-    hour = number(clock[1]) if clock else None
     minute = None
     hours = set()
     if clock:
-        suffix = clock[0].split("点", 1)[-1]
-        minute_text = re.search(NUMBER, suffix) if "点" in clock[0] else None
-        minute = int(clock[2]) if clock[2] else 30 if suffix == "半" else number(minute_text[0]) if minute_text else 0
+        hour, minute = clock_parts(clock)
         if period in {"中午", "下午", "晚上"} and 1 <= hour < 12:
             hour += 12
         hours.add(hour)
@@ -112,7 +127,8 @@ def slot_matches(text, slots, today):
             continue
         if relative_month and (start.year, start.month) != (month_start.year, month_start.month):
             continue
-        if period in {"上午", "早上"} and start.hour >= 12 or period in {"中午", "下午", "晚上"} and start.hour < 12:
+        if (period in {"上午", "早上"} and start.hour >= 12 or period == "中午" and not 11 <= start.hour < 14
+                or period == "下午" and not 12 <= start.hour < 18 or period == "晚上" and start.hour < 18):
             continue
         if clock and (start.hour not in hours or start.minute != minute):
             continue
