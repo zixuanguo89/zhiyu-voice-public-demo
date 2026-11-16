@@ -10,25 +10,50 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:8767")
     parser.add_argument("--out", type=Path, default=Path("artifacts/browser-qa"))
+    parser.add_argument("--channel")
     args = parser.parse_args()
     errors = []
     with sync_playwright() as runner:
-        browser = runner.chromium.launch(args=["--use-fake-device-for-media-stream",
+        browser = runner.chromium.launch(channel=args.channel, args=["--use-fake-device-for-media-stream",
                                                "--use-fake-ui-for-media-stream"])
         context = browser.new_context(permissions=["microphone"])
         page = context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.add_init_script("""
-            window.audioCounts = {starts: 0, stoppedEarly: 0};
+            window.audioCounts = {starts: 0, speechStops: 0, stopsWithoutServer: 0, noisySamples: 0};
             const start = AudioBufferSourceNode.prototype.start;
             const stop = AudioBufferSourceNode.prototype.stop;
+            const createChannel = RTCPeerConnection.prototype.createDataChannel;
+            RTCPeerConnection.prototype.createDataChannel = function(...args) {
+                const channel = createChannel.apply(this, args);
+                channel.addEventListener("message", ({data}) => {
+                    if (typeof data !== "string") return;
+                    const message = JSON.parse(data);
+                    if (message.type === "cut") {
+                        window.lastServerCut = {at: performance.now(), reason: message.reason};
+                    }
+                });
+                return channel;
+            };
+            AnalyserNode.prototype.getFloatTimeDomainData = function(samples) {
+                if (window.audioCounts.starts > 0) {
+                    samples.fill(0.12);
+                    window.audioCounts.noisySamples++;
+                } else {
+                    samples.fill(0);
+                }
+            };
             AudioBufferSourceNode.prototype.start = function(at) {
                 window.audioCounts.starts++;
                 this.endsAt = at + this.buffer.duration;
                 return start.call(this, at);
             };
             AudioBufferSourceNode.prototype.stop = function() {
-                if (this.endsAt > this.context.currentTime) window.audioCounts.stoppedEarly++;
+                if (this.endsAt > this.context.currentTime) {
+                    const cut = window.lastServerCut;
+                    if (!cut || performance.now() - cut.at >= 100) window.audioCounts.stopsWithoutServer++;
+                    else if (cut.reason === "speech") window.audioCounts.speechStops++;
+                }
                 return stop.call(this);
             };
         """)
@@ -41,7 +66,8 @@ def main():
         expect(page.locator("#messages")).to_contain_text("我还在查这笔预约的结果", timeout=20000)
         expect(page.locator("#messages")).to_contain_text("预约成功", timeout=20000)
         counts = page.evaluate("window.audioCounts")
-        assert counts["starts"] > 0 and counts["stoppedEarly"] > 0, counts
+        assert counts["starts"] > 0 and counts["speechStops"] > 0, counts
+        assert counts["noisySamples"] >= 3 and counts["stopsWithoutServer"] == 0, counts
         credential = page.evaluate("JSON.parse(sessionStorage.getItem('zhiyu'))")
         events = page.request.get(args.url+"/api/sessions/"+credential["session_id"]+"/events",
                                   headers={"Authorization":"Bearer "+credential["token"]}).json()

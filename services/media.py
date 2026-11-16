@@ -85,8 +85,6 @@ class VoiceCall:
     def control(self, value):
         if value == "handoff_played" and self.finishing:
             self.handoff_played.set()
-        elif value == "barge" and not self.finishing:
-            self.cut()
         elif value == "ready":
             self.browser_ready = True
             self.ready()
@@ -112,12 +110,12 @@ class VoiceCall:
         with self.conversation.store.tx(write=True) as db:
             emit(db, self.session, turn, kind, payload)
 
-    def cut(self, cancel=True):
+    def cut(self, cancel=True, *, reason=None):
         self.generation += 1
         self.pending_reply = None
         if cancel and self.reply_task and not self.reply_task.done():
             self.reply_task.cancel()
-        self.send({"type": "cut", "generation": self.generation})
+        self.send({"type": "cut", "generation": self.generation, "reason": reason})
 
     async def asr(self):
         try:
@@ -150,8 +148,18 @@ class VoiceCall:
         except Rejection:
             await self.close()
             return
+        speech = "".join(character for character in text if character.isalnum())
+        replying = self.reply_task is not None and not self.reply_task.done()
+        filler_only = all(character in "嗯啊哦呃额唔噢哎咳哼" for character in speech)
+        uncertain_start = not reliable and (replying or not stable)
+        if not speech or not self.partial and (uncertain_start or replying and filler_only):
+            if stable and self.partial:
+                self.partial = False
+                self.send({"type": "partial", "text": ""})
+            return
         if not self.partial:
-            self.cut()
+            if reliable:
+                self.cut(reason="speech")
             self.partial = True
             self.segment += 1
             self.partial_intake = self.conversation.snapshot(self.session)["intake_stage"]

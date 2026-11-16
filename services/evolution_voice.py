@@ -54,12 +54,18 @@ class VoiceProbe(VoiceCall):
         self.ended = asyncio.Event()
         self.first_sample = None
         self.playing = False
-        self.stopped = asyncio.Event()
+        self.previous_turn = -1
+        self.playing_turn = -1
+        self.interrupted_at = None
 
     def send(self, value):
         kind = value["type"]
         if kind == "ready":
             self.connected.set()
+        elif kind == "cut" and value["reason"] == "speech" and self.playing:
+            self.interrupted_at = time.perf_counter()
+        elif kind == "speech":
+            self.playing_turn = value["turn"]
         elif kind == "speech_end":
             self.ended.set()
 
@@ -67,7 +73,8 @@ class VoiceProbe(VoiceCall):
         if generation != self.generation:
             return False
         samples = array("h", frame)
-        if self.first_sample is None and max(map(abs, samples), default=0) >= 160:
+        if (self.playing_turn > self.previous_turn and self.first_sample is None
+                and max(map(abs, samples), default=0) >= 160):
             self.first_sample = time.perf_counter()
             self.started.set()
         self.playing = True
@@ -75,32 +82,27 @@ class VoiceProbe(VoiceCall):
             await asyncio.sleep(len(frame) / 48000)
         finally:
             self.playing = False
-            if generation != self.generation:
-                self.stopped.set()
         return generation == self.generation
 
     async def utterance(self, filename, *, interrupt=False, leave_playing=False):
-        interruption = None
-        if interrupt:
-            if not self.playing:
-                raise ValueError("VOICE_INTERRUPTION_NOT_EXERCISED")
-            self.stopped.clear()
-            now = time.perf_counter()
-            self.control("barge")
-            await asyncio.wait_for(self.stopped.wait(), 1)
-            interruption = (time.perf_counter() - now) * 1000
+        if interrupt and not self.playing:
+            raise ValueError("VOICE_INTERRUPTION_NOT_EXERCISED")
+        self.interrupted_at = None
+        self.previous_turn = self.conversation.snapshot(self.session)["turn"]
         self.started.clear()
         self.ended.clear()
         self.first_sample = None
+        voiced_start = None
         voiced_end = None
         with wave.open(filename, "rb") as recording:
             if (recording.getnchannels(), recording.getsampwidth(), recording.getframerate()) != (1, 2, 16000):
                 raise ValueError("VOICE_FIXTURE_NEEDS_MONO_PCM_16KHZ")
             while frame := recording.readframes(320):
+                if max(map(abs, array("h", frame)), default=0) >= 160:
+                    voiced_start = voiced_start or time.perf_counter()
+                    voiced_end = time.perf_counter() + len(frame) / 32000
                 self.input_audio(frame)
                 await asyncio.sleep(len(frame) / 32000)
-                if max(map(abs, array("h", frame)), default=0) >= 160:
-                    voiced_end = time.perf_counter()
         if voiced_end is None:
             raise ValueError("VOICE_FIXTURE_IS_SILENT")
         async def silence():
@@ -114,10 +116,12 @@ class VoiceProbe(VoiceCall):
             if not leave_playing:
                 await asyncio.wait_for(self.ended.wait(), 25)
         except TimeoutError:
-            return None, interruption
+            return None, None
         finally:
             padding.cancel()
             await asyncio.gather(padding, return_exceptions=True)
+        interruption = ((self.interrupted_at - voiced_start) * 1000
+                        if interrupt and self.interrupted_at and self.interrupted_at >= voiced_start else None)
         return max(0, (self.first_sample - voiced_end) * 1000), interruption
 
 

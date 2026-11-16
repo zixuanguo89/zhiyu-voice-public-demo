@@ -319,15 +319,28 @@ class Cases(unittest.TestCase):
         s,key = self.open()
         async def simulate():
             media = MediaCall(self.call,self.lang,SimpleNamespace(),s,key,False)
+            controls = []
+            media.send = controls.append
             async def reply(*_):
                 return
             media.speak = reply
+            old_reply = media.spawn(asyncio.Event().wait())
+            media.reply_task = old_reply
             try:
+                media.control("barge")
+                await media.on_text("……", False, True)
+                await media.on_text("嗯", True, True)
+                await media.on_text("含糊的识别结果", True, False)
+                self.assertEqual(controls, [])
+                self.assertFalse(old_reply.done())
                 await media.on_text("改到S2",False,True)
                 self.assertFalse(self.operations(s))
                 self.assertIsNone(self.call.snapshot(s)["offer"])
+                self.assertEqual([message["reason"] for message in controls if message["type"] == "cut"], ["speech"])
                 await media.on_text("不要S2，改到S3",True,True)
                 await media.reply_task
+                self.assertEqual(sum(message["type"] == "cut" for message in controls), 1)
+                self.assertTrue(old_reply.cancelled())
                 self.assertEqual(self.call.snapshot(s)["offer"]["target_slot"],"S3")
             finally:
                 await media.close()

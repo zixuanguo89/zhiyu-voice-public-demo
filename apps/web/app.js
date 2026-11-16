@@ -593,6 +593,7 @@ class Voice {
     this.next = 0;
     this.active = false;
     this.loudFrames = 0;
+    this.onset = null;
     this.endOfSpeech = null;
     this.speaking = false;
     this.firstPlayTimer = null;
@@ -699,7 +700,7 @@ class Voice {
     silent.gain.value = 0;
     input.connect(this.analyser).connect(silent).connect(this.context.destination);
     this.samples = new Float32Array(this.analyser.fftSize);
-    this.timer = setInterval(() => this.vad(),25);
+    this.timer = setInterval(() => this.sampleInput(),25);
   }
   message(data) {
     if (transport !== this) return;
@@ -725,8 +726,12 @@ class Voice {
       this.completeHandoff();
     }
     if (data.type === "cut") {
+      const wasPlaying = this.active || this.sources.size > 0;
       this.generation = data.generation;
       this.flush();
+      if (data.reason === "speech" && wasPlaying && this.onset !== null) {
+        this.timing("barge_stop",performance.now()-this.onset);
+      }
     }
     if (data.type === "speech") {
       this.generation = data.generation;
@@ -773,20 +778,14 @@ class Voice {
   timing(kind, ms) {
     if (ms >= 0) this.sendControl(JSON.stringify({type:"timing",kind,ms:Math.round(ms)}));
   }
-  vad() {
+  sampleInput() {
     this.analyser.getFloatTimeDomainData(this.samples);
     const rms = Math.sqrt(this.samples.reduce((sum,x) => sum+x*x,0)/this.samples.length);
     this.updateMeter(rms);
     if (this.finishing) return;
     if (rms > .025) {
       if (this.loudFrames++ === 0) this.onset = performance.now();
-      if (this.loudFrames === 3) {
-        this.speaking = true;
-        if (this.sources.size || this.active) {
-          this.interruptPlayback();
-          this.timing("barge_stop",performance.now()-this.onset);
-        }
-      }
+      if (this.loudFrames === 3) this.speaking = true;
     } else {
       if (this.speaking) this.endOfSpeech = performance.now();
       this.loudFrames = 0;
@@ -826,7 +825,6 @@ class Voice {
   interruptPlayback() {
     this.ignoreThrough = this.generation;
     this.flush();
-    this.sendControl("barge");
   }
   flush() {
     clearTimeout(this.firstPlayTimer);
