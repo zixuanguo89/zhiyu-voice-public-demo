@@ -7,6 +7,9 @@ CREATE TABLE IF NOT EXISTS policy_audit (id INTEGER PRIMARY KEY, policy TEXT, ac
 CREATE TABLE IF NOT EXISTS observations (
  policy TEXT, session TEXT, success INTEGER, critical INTEGER, PRIMARY KEY(policy,session)
 );
+CREATE TABLE IF NOT EXISTS observation_scans (
+ policy TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(policy,session)
+);
 CREATE TABLE IF NOT EXISTS sessions (
  id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, expires REAL NOT NULL, scope TEXT,
  verified_until REAL, appointment TEXT NOT NULL, policy TEXT NOT NULL, state TEXT NOT NULL,

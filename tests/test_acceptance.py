@@ -27,7 +27,7 @@ from services.media import MediaCall
 from services.orchestrator import Conversation
 from services.providers import ProviderError, decode_event, message
 from services.quality import audit
-from services.storage import ROOT, encode, ident
+from services.storage import ROOT, emit, encode, ident
 
 DESCRIPTIONS = {
     "T01":"正常改期", "T02":"仅查询", "T03":"无可用时段", "T04":"取消预约", "T05":"放弃办理",
@@ -994,6 +994,51 @@ class Cases(unittest.TestCase):
         self.assertIn("clarification",candidate["evidence"]["diff"])
         self.assertEqual(candidate["status"],"rejected")
         self.assertIn("需要真实语音",candidate["evidence"]["reasons"][0])
+        self.assertEqual(len(candidate["evidence"]["generated_cases"]), 24)
+        self.assertEqual(len(candidate["evidence"]["generated_replays"]["candidate"]), 24)
+
+    def test_evolution_publishes_only_after_independent_scoring_and_observes_closed_calls(self):
+        class Judge:
+            kind = "dashscope"
+            model = "test-judge"
+
+            async def intent(self, *args, **kwargs):
+                return None
+
+            async def json(self, system, user, **kwargs):
+                data = json.loads(user)
+                if isinstance(data, dict):
+                    return {**data["baseline"], "clarification": "请告诉我具体日期和时间，也可以选一个可用时段。"}
+                return {"scores": [{"id": item["id"], "score": 4, "reason": "符合评审标准"} for item in data]}
+
+        settings = SimpleNamespace(audio=True, evolution_validation=Path("independent-validation.json"))
+        engine = Evolution(self.call, Judge(), self.clock, settings=settings)
+        manifest = [{"id": f"v-{i}", "family": "independent-family", "entity": f"V-{i}",
+                     "source": "held-out-recorders"} for i in range(200)]
+        failed = {"success": False, "safe": True, "timings": [1300], "interruptions": [20],
+                  "writes": 1, "coverage": 1}
+        passed = {**failed, "success": True}
+        before = [[failed, passed, passed] for _ in manifest]
+        after = [[passed, passed, passed] for _ in manifest]
+        with patch("services.evolution.validation_cases", return_value=manifest), patch(
+                "services.evolution.paired_voice", return_value=(before, after)):
+            policy = asyncio.run(engine.generate())
+        self.assertEqual(engine.evidence(policy)["status"], "observing")
+        self.assertEqual(engine.status()["active"], policy)
+        completed, _ = self.open()
+        self.say(completed, "S2", "确认改期")
+        self.call.close(completed)
+        engine.observe_closed()
+        engine.observe_closed()
+        with self.call.store.tx() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM observations").fetchone()[0], 1)
+        faulty, _ = self.open()
+        with self.call.store.tx(write=True) as db:
+            emit(db, faulty, 1, "assistant.replied", {"text": "预约成功"})
+        self.call.close(faulty)
+        engine.observe_closed()
+        self.assertEqual(engine.status()["active"], "baseline")
+        self.assertEqual(engine.evidence(policy)["status"], "rolled_back")
 
     def test_T35(self):
         self.assertTrue(check_config(BASELINE))

@@ -20,3 +20,5 @@ services:
         sync: false
       - key: RECORDS_ADMIN_TOKEN
         sync: false
+      - key: ADMIN_TOKEN
+        sync: false

@@ -503,20 +503,32 @@ $("admin-form").onsubmit = async (event) => {
   event.preventDefault();
   adminToken = $("admin-key").value.trim();
   $("admin-key").value = "";
-  try { await loadPolicies(); }
+  try {
+    await loadPolicies();
+    const latest = await admin("/jobs/latest");
+    if (["queued","running"].includes(latest.status)) watchJob(latest.id).catch((e) => notify(e.message));
+  }
   catch (e) { adminToken = ""; $("admin-content").hidden = true; notify(e.message === "FORBIDDEN" ? "控制台口令不正确。" : e.message); }
 };
 async function loadPolicies() {
   const data = await admin("/policies");
   $("admin-content").hidden = false;
   $("active-policy").textContent = "当前策略 " + data.active;
+  const statusNames = {baseline:"基线", evaluating:"评测中", rejected:"未达发布门槛", eligible:"待发布",
+    observing:"已发布 · 观察中", stable:"稳定", rolled_back:"已回滚"};
   $("policies").replaceChildren(...data.policies.map((policy) => {
     const row = node("details",undefined,"version");
-    const summary = node("summary",`${policy.id} · ${policy.status}`);
+    const summary = node("summary",`${policy.parent ? policy.id.slice(-8) : policy.id} · ${statusNames[policy.status] || policy.status}`);
     const evidence = policy.evidence;
     row.append(summary,node("p",policy.config.clarification,"hint"));
     if (evidence.reasons) row.append(node("p",evidence.reasons.join(" · "),"hint"));
-    if (policy.parent) row.append(node("pre",JSON.stringify({parent:policy.parent,...evidence},null,2)));
+    if (policy.parent) {
+      const score = evidence.judge;
+      const format = (value) => typeof value === "number" ? value.toFixed(2) : "待评测";
+      row.append(node("p",`自动生成 ${evidence.generated_count || 0} 个用例 · 规则回归 ${evidence.report?.regression_pass ? "通过" : "未通过"} · 模型评分 ${format(score?.baseline_mean)} → ${format(score?.candidate_mean)}（满分 4）`,"hint"),
+        node("pre",JSON.stringify({parent:policy.parent,...evidence},null,2)),
+        button("下载评测证据",() => downloadPolicyEvidence(policy.id)));
+    }
     if (policy.status === "eligible") row.append(button("发布候选",() => switchPolicy(policy.id,"publish")));
     if (policy.parent && policy.id === data.active) row.append(button("回滚版本",() => switchPolicy(policy.id,"rollback")));
     return row;
@@ -525,18 +537,28 @@ async function loadPolicies() {
     `${new Date(item.at*1000).toLocaleString("zh-CN")} · ${item.action} · ${item.policy}`,"hint")) :
     [node("p","暂无版本操作。","hint")]));
 }
+async function downloadPolicyEvidence(policy) {
+  try {
+    const evidence = await admin("/policies/" + policy + "/evidence");
+    const url = URL.createObjectURL(new Blob([JSON.stringify(evidence,null,2)],{type:"application/json"}));
+    const link = node("a");
+    link.href = url;
+    link.download = policy + ".json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) { notify(e.message); }
+}
 async function switchPolicy(id, action) {
   try { await admin("/policies/" + id + "/" + action,{method:"POST"}); await loadPolicies(); }
   catch (e) { notify(e.message); }
 }
-async function runJob(kind) {
+async function watchJob(job) {
   $("regression").disabled = $("evolve").disabled = true;
   $("job-result").hidden = true;
   try {
-    const {job} = await admin("/jobs",{method:"POST",body:{kind}});
     $("job-status").textContent = "任务运行中";
-    for (let attempt=0; attempt<100; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve,650));
+    for (let attempt=0; ; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, attempt < 20 ? 650 : 4000));
       const result = await admin("/jobs/" + job);
       if (result.status === "done" || result.status === "failed") {
         $("job-status").textContent = result.status === "done" ? "任务结束 · " + job.slice(-8) : "任务未通过 · " + job.slice(-8);
@@ -545,8 +567,15 @@ async function runJob(kind) {
         await loadPolicies();
         return;
       }
+      $("job-status").textContent = result.detail?.stage || "任务运行中";
     }
-    $("job-status").textContent = "任务仍在后台运行 · " + job.slice(-8);
+  } finally { $("regression").disabled = $("evolve").disabled = false; }
+}
+async function runJob(kind) {
+  $("regression").disabled = $("evolve").disabled = true;
+  try {
+    const {job} = await admin("/jobs",{method:"POST",body:{kind}});
+    await watchJob(job);
   } catch (e) { notify(e.message); }
   finally { $("regression").disabled = $("evolve").disabled = false; }
 }
@@ -855,8 +884,8 @@ async function init() {
     $("records-access").hidden = view === "call" || !features.records_admin_enabled;
     chip($("environment"),features.microphone ? "云语音已配置 · 业务沙箱" : "文本模式 · 业务沙箱");
     $("fault").disabled = !features.demo_faults;
+    document.querySelector(".strategy-panel").hidden = !features.evolution_admin_enabled;
     if (features.public_demo) {
-      document.querySelector(".strategy-panel").hidden = true;
       $("public-notice").hidden = false;
       if (features.persistent_storage) {
         $("public-notice").textContent = "公网演示请使用虚构资料。通话及预约记录保存在云端，网站管理员可查看。";

@@ -178,13 +178,13 @@
         <div class="panel-head"><div><h2>人工工单</h2><p>客户主动转人工时生成</p></div></div>
         <div id="booking-handoffs" class="panel-body table-scroll"></div>
       </section>
-      <details class="panel strategy-panel"><summary>策略与评测</summary>
+      <details class="panel strategy-panel"><summary>自主进化与评测</summary>
       <section class="panel admin">
         <div class="panel-head"><div><h2>控制台权限</h2><p>请输入启动窗口所提示文件中的本次运行口令，或已配置的管理员口令。</p></div></div>
         <form id="admin-form" class="panel-body actions"><label class="sr-only" for="admin-key">管理员口令</label><input id="admin-key" type="password" autocomplete="off" placeholder="管理员口令" required><button class="primary">解锁</button></form>
       </section>
       <div id="admin-content" hidden>
-        <section class="panel admin"><div class="panel-head"><div><h2>评测任务</h2><p id="job-status" aria-live="polite">等待运行</p></div><div class="actions"><button id="regression">运行回归</button><button class="primary" id="evolve">生成并评测候选</button></div></div><pre id="job-result" hidden></pre></section>
+        <section class="panel admin"><div class="panel-head"><div><h2>策略进化任务</h2><p id="job-status" aria-live="polite">等待运行</p></div><div class="actions"><button id="regression">运行回归</button><button class="primary" id="evolve">运行自主进化</button></div></div><pre id="job-result" hidden></pre></section>
         <section class="panel admin"><div class="panel-head"><div><h2>策略版本</h2><p id="active-policy">读取中</p></div></div><div class="panel-body" id="policies"></div></section>
         <section class="panel admin"><div class="panel-head"><h2>版本操作记录</h2></div><div class="panel-body" id="history"></div></section>
       </div>

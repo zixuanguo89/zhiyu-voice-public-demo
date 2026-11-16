@@ -72,7 +72,7 @@ def create_app(settings=None):
     conversation = Conversation(settings.database, Sandbox(settings.business),
                                 confirmation_ttl=settings.confirmation_ttl, session_ttl=settings.session_ttl)
     language = Language(settings)
-    evolution = Evolution(conversation, language)
+    evolution = Evolution(conversation, language, settings=settings)
     desk = CallDesk(conversation)
     calls = {}
     jobs = set()
@@ -99,7 +99,7 @@ def create_app(settings=None):
         return token
 
     def admin(header):
-        if settings.public_demo or not secrets.compare_digest(bearer(header).encode(), settings.admin.encode()):
+        if not settings.evolution_admin_enabled or not secrets.compare_digest(bearer(header).encode(), settings.admin.encode()):
             raise Rejection("FORBIDDEN")
 
     def authorize_records(header):
@@ -107,6 +107,7 @@ def create_app(settings=None):
             raise Rejection("FORBIDDEN")
 
     async def recovery():
+        next_observation = time.monotonic()
         while True:
             try:
                 conversation.recover(session for session, call in calls.items() if not call.closed)
@@ -120,6 +121,9 @@ def create_app(settings=None):
                         call.begin_handoff(snap)
                     else:
                         call.follow_up(snap)
+                if time.monotonic() >= next_observation:
+                    await asyncio.to_thread(evolution.observe_closed)
+                    next_observation = time.monotonic() + 5
             except Exception as exc:
                 log.error("Recovery failed (%s)", type(exc).__name__)
             await asyncio.sleep(0.5)
@@ -184,6 +188,7 @@ def create_app(settings=None):
             db.execute("SELECT 1 FROM appointments LIMIT 1").fetchone()
         return {"status": "ok", "business": "mock", "microphone": settings.audio, "demo_faults": settings.demo,
                 "persistent_storage": settings.persistent_storage, "records_admin_enabled": bool(settings.records_admin),
+                "evolution_admin_enabled": settings.evolution_admin_enabled,
                 "public_demo": settings.public_demo, "voice_transport": "websocket" if settings.public_demo else "webrtc",
                 "providers": {k: {"mode": v[0], "model": v[2] if v[0] == "dashscope" else None}
                               for k, v in settings.providers.items()}}
@@ -408,7 +413,7 @@ def create_app(settings=None):
         set_job(job, "running", {})
         try:
             if kind == "evolution":
-                policy = await evolution.generate()
+                policy = await evolution.generate(lambda stage: set_job(job, "running", {"stage": stage}))
                 set_job(job, "done", {"policy": policy})
             else:
                 output = settings.artifacts.resolve() / "runs" / job
@@ -437,6 +442,13 @@ def create_app(settings=None):
         task.add_done_callback(jobs.discard)
         return {"job": job}
 
+    @app.get("/api/admin/jobs/latest")
+    async def latest_job(authorization: Auth = None):
+        admin(authorization)
+        with conversation.store.tx() as db:
+            row = db.execute("SELECT id,status FROM jobs ORDER BY rowid DESC LIMIT 1").fetchone()
+        return dict(row) if row else {}
+
     @app.get("/api/admin/jobs/{job}")
     async def job_detail(job: str, authorization: Auth = None):
         admin(authorization)
@@ -449,19 +461,24 @@ def create_app(settings=None):
     @app.get("/api/admin/policies")
     async def policies(authorization: Auth = None):
         admin(authorization)
-        return evolution.status()
+        return evolution.status(compact=True)
+
+    @app.get("/api/admin/policies/{policy}/evidence")
+    async def policy_evidence(policy: str, authorization: Auth = None):
+        admin(authorization)
+        return evolution.evidence(policy)
 
     @app.post("/api/admin/policies/{policy}/publish")
     async def publish(policy: str, authorization: Auth = None):
         admin(authorization)
         evolution.publish(policy)
-        return evolution.status()
+        return evolution.status(compact=True)
 
     @app.post("/api/admin/policies/{policy}/rollback")
     async def rollback(policy: str, authorization: Auth = None):
         admin(authorization)
         evolution.rollback(policy)
-        return evolution.status()
+        return evolution.status(compact=True)
 
     return app
 

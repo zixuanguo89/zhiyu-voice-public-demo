@@ -13,7 +13,7 @@ from services.bank import (BANK_AFTERNOON_WINDOW, BANK_APPOINTMENT, BANK_ASK_PRE
                            bank_availability, bank_intent, bank_list_reference, bank_short_answer, bank_slot_offer, bank_slot_time,
                            bank_space, bank_topics, bank_words, is_bank_space)
 from services.bank_time import CLOCK, PERIOD, has_calendar_day, slot_matches, time_revision
-from services.dialogue import (BASELINE, OPENING, POLICY_ID, SPOKEN_OPENING, SPOKEN_RETRY,
+from services.dialogue import (BASELINE, OPENING, POLICY_DEFAULTS, POLICY_ID, SPOKEN_OPENING, SPOKEN_RETRY,
                                canonical_ids, denies_spoken_identity, parse, redacted, slot_label, spoken_identity)
 from services.customer import (CUSTOMER_OPENING, NAME_PROMPT, PHONE_PROMPT, customer_name, customer_phone,
                                intake_stage)
@@ -106,6 +106,11 @@ class Conversation:
             self._say(db, row, lead + BANK_WEEKDAY_WINDOW, "OFFERING", question="day_preference")
 
     def _bank_guidance(self, db, row, topics):
+        order = self._policy_config(db, row)["knowledge_order"]
+        if order == "documents_first":
+            topics = sorted(topics, key=lambda topic: topic not in {"documents", "document_type"})
+        elif order == "branch_first":
+            topics = sorted(topics, key=lambda topic: topic not in {"branch", "address", "other_branch"})
         for topic in topics:
             emit(db, row["id"], row["turn"], "bank.guidance", {"topic": topic})
         return "".join(BANK_FAQ[topic] for topic in topics)
@@ -141,8 +146,12 @@ class Conversation:
     def context(self, session):
         with self.store.tx() as db:
             row = self._get(db, session)
-            config = db.execute("SELECT config FROM policies WHERE id=?", (row["policy"],)).fetchone()[0]
-            return row["state"], json.loads(config), bool(row["scope"] and row["verified_until"] > self.clock())
+            return row["state"], self._policy_config(db, row), bool(row["scope"] and row["verified_until"] > self.clock())
+
+    @staticmethod
+    def _policy_config(db, row):
+        config = db.execute("SELECT config FROM policies WHERE id=?", (row["policy"],)).fetchone()[0]
+        return {**POLICY_DEFAULTS, **json.loads(config)}
 
     def intent_context(self, session):
         with self.store.tx() as db:
@@ -385,6 +394,7 @@ class Conversation:
             self._say(db, row, detour + reply, "RECONCILING")
             return
         rolling = bank and scope.startswith("C")
+        config = self._policy_config(db, row)
         choice_ids = previous.get("slot_options", [])
         preference = {key: previous[key] for key in ("question", "preference_slots")
                       if key in previous and question in {"day_preference", "time_preference"}}
@@ -512,7 +522,8 @@ class Conversation:
             action, target = "relative_time", -1 if "早" in text else 1
         if rolling and reliable and question in {"day_preference", "time_preference"} and re.fullmatch(
                 r"(?:都行|都可以|哪天都行|哪天都可以|随便|你安排吧|您安排吧|挑个有空的)", bank_words(text)):
-            action, target = ("choose", matching_slots[0]["id"]) if matching_slots else ("ask_time", ())
+            index = -1 if config["delegated_slot"] == "latest" else 0
+            action, target = ("choose", matching_slots[index]["id"]) if matching_slots else ("ask_time", ())
         if action == "off_topic":
             action, target = "unrecognized", None
         if action == "decline_times":
@@ -623,7 +634,8 @@ class Conversation:
                 return
             action, target = "choose", target[0]
         listing = "、".join(map(slot_label, available)) or "暂无可用时段，可以转人工登记需求"
-        config = json.loads(db.execute("SELECT config FROM policies WHERE id=?", (row["policy"],)).fetchone()[0])
+        if not bank:
+            config = self._policy_config(db, row)
         if action in {"query", "appointment_query", "recap_time", "cancel_status"}:
             status = "已取消" if current["status"] == "canceled" else "有效"
             emit(db, session, row["turn"], "appointment.read", {"appointment": current, "slots": available})
@@ -670,6 +682,8 @@ class Conversation:
                 "digest": digest(params), "expires": expiry})
             if bank and chosen:
                 lead = "行，我再跟您对一下。" if row["confirmation"] else "好，我跟您对一下。"
+                if config["confirmation_style"] == "concise":
+                    lead = "我核对一下。"
                 reply = guidance + bank_slot_offer(params, "" if asked_time else lead, asked_time=asked_time)
             elif bank:
                 reply = (f"我跟您确认一下，您要取消{bank_slot_time(current_slot)}的预约 {appt}，对吗？"
@@ -688,7 +702,7 @@ class Conversation:
                 reply = ("您刚才选的那天，想约几点？" if question == "time_preference" else
                          "您哪天下午方便？可以直接说周几。")
             elif bank and action == "unrecognized":
-                reply = "我刚才没听明白。您是想问到店要带什么，还是想查一下预约时间？"
+                reply = config["bank_clarification"]
             elif bank:
                 reply = "您可以告诉我想约哪天，或者说想选第几个时间。"
             else:

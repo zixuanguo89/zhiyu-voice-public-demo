@@ -25,13 +25,14 @@ class Language:
     def __init__(self, settings):
         self.kind, self.endpoint, self.model, self.key = settings.providers["LLM"]
 
-    async def json(self, system, user):
+    async def json(self, system, user, *, timeout=8, max_tokens=512):
         if self.kind != "dashscope":
             raise ProviderError("LLM_DISABLED")
         try:
-            async with asyncio.timeout(8), httpx.AsyncClient(timeout=httpx.Timeout(5), follow_redirects=False) as client:
+            async with asyncio.timeout(timeout), httpx.AsyncClient(
+                    timeout=httpx.Timeout(timeout, connect=5), follow_redirects=False) as client:
                 response = await client.post(self.endpoint, headers={"Authorization": f"Bearer {self.key}"}, json={
-                    "model": self.model, "temperature": 0, "enable_thinking": False, "max_tokens": 512,
+                    "model": self.model, "temperature": 0, "enable_thinking": False, "max_tokens": max_tokens,
                     "response_format": {"type": "json_object"},
                     "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 })

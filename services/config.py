@@ -23,6 +23,8 @@ class Settings:
         self.public_demo = env.get("PUBLIC_DEMO", "0") == "1"
         self.persistent_storage = env.get("PERSISTENT_STORAGE", "0") == "1"
         self.admin = env.get("ADMIN_TOKEN") or secrets.token_urlsafe(32)
+        self.explicit_admin = bool(env.get("ADMIN_TOKEN"))
+        self.evolution_validation = Path(env["EVOLUTION_VOICE_MANIFEST"]) if env.get("EVOLUTION_VOICE_MANIFEST") else None
         self.ephemeral_admin = not self.public_demo and not env.get("ADMIN_TOKEN")
         self.records_admin = env.get("RECORDS_ADMIN_TOKEN") or ("" if self.public_demo else self.admin)
         self.artifacts = Path(env.get("ARTIFACT_DIR", "artifacts"))
@@ -59,3 +61,7 @@ class Settings:
             self.providers[name] = (provider, url, env.get(f"{name}_MODEL", model), key)
         self.voice = env.get("TTS_VOICE", "longxiaochun_v2")
         self.audio = all(self.providers[name][0] == "dashscope" for name in ("ASR", "TTS"))
+
+    @property
+    def evolution_admin_enabled(self):
+        return not self.public_demo or self.explicit_admin

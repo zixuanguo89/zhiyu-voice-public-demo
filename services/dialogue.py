@@ -9,6 +9,13 @@ AFFIRM = {"确认", "确认办理", "确认改期", "确认取消", "是的", "�
           "确认预约", "我确认预约", "确认取消预约"}
 POLICY_ID = "reservation.zh-CN.v1"
 BASELINE = {"clarification": "请告诉我具体日期或选择一个可用时段。", "intent_prompt": ""}
+POLICY_DEFAULTS = {
+    **BASELINE,
+    "bank_clarification": "我刚才没听明白。您是想问到店要带什么，还是想查一下预约时间？",
+    "confirmation_style": "standard",
+    "knowledge_order": "spoken_order",
+    "delegated_slot": "earliest",
+}
 ID_DIGITS = str.maketrans("〇零一二三四五六七八九０１２３４５６７８９", "001234567890123456789")
 IDENTITY_DENIAL = re.compile(r"不是(?:[我您你]?本人|我自己|给我)|非本人|(?:替|帮|给)(?:别人|他人|我爸|我妈|家人)|代办")
 IDENTITY_FILLERS = re.compile(r"^(?:你好|您好|喂|嗯|啊|呃|额|唔|哦|噢|哎)+")
