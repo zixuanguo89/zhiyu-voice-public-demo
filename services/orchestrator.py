@@ -10,7 +10,8 @@ from services.business import Rejection, Unknown, ZONE
 from services.bank import (BANK_AFTERNOON_WINDOW, BANK_APPOINTMENT, BANK_ASK_PREFERENCE, BANK_BRANCH, BANK_CHECKING, BANK_CONFIRM,
                            BANK_CONFIRM_FALLBACK, BANK_CONFIRM_HELP, BANK_DETOUR, BANK_FAQ, BANK_HANDOFF,
                            BANK_HANDOFF_QUESTION, BANK_NO_MATCH, BANK_OPENING, BANK_SCENARIO, BANK_TIME_OR_HANDOFF, BANK_WEEKDAY_WINDOW,
-                           bank_availability, bank_intent, bank_list_reference, bank_short_answer, bank_slot_offer, bank_slot_time,
+                           bank_availability, bank_contextual_agreement, bank_intent, bank_list_reference, bank_short_answer,
+                           bank_slot_offer, bank_slot_time,
                            bank_space, bank_topics, bank_words, is_bank_space)
 from services.bank_time import CLOCK, PERIOD, has_calendar_day, slot_matches, time_revision
 from services.dialogue import (BASELINE, OPENING, POLICY_DEFAULTS, POLICY_ID, SPOKEN_OPENING, SPOKEN_RETRY,
@@ -435,6 +436,9 @@ class Conversation:
                 return
             text = reference
             action = "choose"
+        if (bank and config["confirmation_lexicon"] == "conversational" and previous.get("confirmation_id")
+                and bank_contextual_agreement(text)):
+            action, target = "agree", None
         if action in {"confirm", "agree"}:
             self._confirm(db, row, scope, bank_words(text) if bank else text, reliable, target, bank,
                           conversational=action == "agree")

@@ -135,6 +135,15 @@ def bank_list_reference(text, offered_slots):
     return offered_slots[-1] if position in {"最后", "最晚", "后面", "后"} else offered_slots[0]
 
 
+def bank_contextual_agreement(text):
+    """An affirmative reply to the exact proposal, with no condition or question."""
+    if any(mark in text for mark in ("?", "？")):
+        return False
+    words = re.sub(r"^(?:喂|你好|您好)+", "", bank_words(text))
+    return bool(re.fullmatch(r"(?:好(?:的)?|行|可以)(?:就(?:用|按)?这个(?:时间|时段)(?:吧)?|"
+                             r"麻烦(?:你|您)(?:了|一下)?|帮我定下来(?:吧)?)", words))
+
+
 def bank_topics(text):
     if re.search(r"(?:信用卡|万事达|mastercard)", text, re.IGNORECASE):
         return ("scope",)

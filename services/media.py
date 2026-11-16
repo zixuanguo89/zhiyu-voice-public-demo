@@ -10,7 +10,8 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioResampler
 
 from services.business import Rejection, ZONE
-from services.bank import BANK_INTENT_HINT, BANK_SCENARIO, bank_intent, bank_list_reference, bank_short_answer
+from services.bank import (BANK_INTENT_HINT, BANK_SCENARIO, bank_contextual_agreement, bank_intent,
+                           bank_list_reference, bank_short_answer)
 from services.dialogue import parse, redacted
 from services.providers import ProviderError, recognize, synthesize
 from services.quality import save_report
@@ -32,6 +33,8 @@ async def submit_text(conversation, language, session, text, event_id=None, expe
         hint = f"{BANK_INTENT_HINT} {hint}"
         if snapshot["offer"]:
             hint += " 正在等客户确认上一个时段。没听清时返回 clarify，不能猜测客户改选。"
+            if config["confirmation_lexicon"] == "conversational" and bank_contextual_agreement(text):
+                action = "agree"
     else:
         action, _ = parse(text, slots)
     suggestion = None

@@ -1008,7 +1008,8 @@ class Cases(unittest.TestCase):
             async def json(self, system, user, **kwargs):
                 data = json.loads(user)
                 if isinstance(data, dict):
-                    return {**data["baseline"], "clarification": "请告诉我具体日期和时间，也可以选一个可用时段。"}
+                    return {**data["baseline"], "clarification": "请告诉我具体日期和时间，也可以选一个可用时段。",
+                            "confirmation_lexicon": "conversational"}
                 return {"scores": [{"id": item["id"], "score": 4, "reason": "符合评审标准"} for item in data]}
 
         settings = SimpleNamespace(audio=True, evolution_validation=Path("independent-validation.json"))
@@ -1025,6 +1026,14 @@ class Cases(unittest.TestCase):
             policy = asyncio.run(engine.generate())
         self.assertEqual(engine.evidence(policy)["status"], "observing")
         self.assertEqual(engine.status()["active"], policy)
+        self.now = datetime(2026, 11, 16, 10, tzinfo=ZONE).timestamp()
+        bank, _ = self.call.open(desk="desk_" + "e" * 64, scenario="bank_card", customer_intake=True)
+        self.say(bank, "我叫林小满，手机号19900000991", "是我本人", "周四下午四点", "行，麻烦您？")
+        self.assertEqual(self.operations(bank), [])
+        self.say(bank, "行，麻烦您")
+        self.assertEqual(len(self.operations(bank)), 1)
+        self.say(bank, "取消预约", "行，麻烦您")
+        self.assertEqual(len(self.operations(bank)), 1)
         completed, _ = self.open()
         self.say(completed, "S2", "确认改期")
         self.call.close(completed)

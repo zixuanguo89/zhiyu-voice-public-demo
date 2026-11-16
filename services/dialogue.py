@@ -13,6 +13,7 @@ POLICY_DEFAULTS = {
     **BASELINE,
     "bank_clarification": "我刚才没听明白。您是想问到店要带什么，还是想查一下预约时间？",
     "confirmation_style": "standard",
+    "confirmation_lexicon": "standard",
     "knowledge_order": "spoken_order",
     "delegated_slot": "earliest",
 }
