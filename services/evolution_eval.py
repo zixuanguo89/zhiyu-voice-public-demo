@@ -55,6 +55,37 @@ def generate_cases(seed):
     return cases
 
 
+def generate_intake_cases(seed):
+    groups = (
+        ("phone_three_groups", ("林小满", "幺九九", "零零零零", "零九九幺", "是我本人"), {"verified": True}),
+        ("phone_two_groups", ("林小满", "199-0000", "最后四位是0991", "对，是我本人"), {"verified": True}),
+        ("phone_restart", ("林小满", "199", "刚才说错了，从头说", "138", "中间四位是1234", "末尾没听见", "5678", "是我本人"),
+         {"verified": True, "phone_tail": "5678"}),
+        ("phone_group_repeat", ("林小满", "199", "123-45", "199", "0000", "0991", "是本人"), {"verified": True}),
+        ("phone_partial_only", ("林小满", "199", "000", "我想知道要带什么材料"), {"verified": False, "intake_stage": "phone"}),
+        ("phone_refusal", ("林小满", "我不好跟说", "那就麻烦您了"), {"verified": False, "handoff": True}),
+        ("phone_recovery_prompt", ("林小满", "听不到吗", "我再试一次"),
+         {"verified": False, "intake_stage": "phone", "reply_contains": "文字交谈"}),
+        ("phone_privacy", ("林小满", "199", "我不方便报手机号", "不用了", "转人工"),
+         {"verified": False, "handoff": True}),
+        ("phone_wrong_length", ("林小满", "199", "12345678", "是本人"),
+         {"verified": False, "intake_stage": "phone"}),
+        ("phone_correct_tail", (INTAKE[0], "手机号不对", "138", "1234", "5678", "是我本人"),
+         {"verified": True, "phone_tail": "5678"}),
+        ("handoff_asr_fa", (*INTAKE, "只有上午有空", "法人工"), {"verified": True, "handoff": True}),
+        ("handoff_asr_fan", (*INTAKE, "只有上午有空", "反人工"), {"verified": True, "handoff": True}),
+        ("handoff_natural", ("林小满", "能给我接个人工客服吗"), {"verified": False, "handoff": True}),
+        ("handoff_denied", (*INTAKE, "只有上午有空", "先不要转人工", "我暂时不需要人工客服"), {"handoff": False}),
+        ("handoff_not_in_context", (*INTAKE, "人工智能是什么", "反人工智能是什么意思"), {"handoff": False}),
+        ("handoff_uncertain_audio", (*INTAKE, "只有上午有空", "反人工"), {"handoff": False, "reply_contains": "想转人工吗"}),
+    )
+    return [{"id": f"intake-{family}", "family": f"intake:{family}", "entity": f"INT-{seed[-12:]}-{index}",
+             "source": "synthetic-intake-regression", "turns": list(turns),
+             "low_confidence_turns": [len(turns) - 1] if family == "handoff_uncertain_audio" else [],
+             "expected": {"writes": 0, **expected}}
+            for index, (family, turns, expected) in enumerate(groups)]
+
+
 def isolated_conversation(folder, config):
     root = Path(folder)
     clock = lambda: EVAL_TIME
@@ -72,11 +103,13 @@ def score(conversation, session, case):
     appointment = snapshot["appointment"] or {}
     writes = [event for event in trail if event["event_type"] == "operation.sent"]
     topics = {event["payload"]["topic"] for event in trail if event["event_type"] == "bank.guidance"}
-    handoff = any(event["event_type"] == "handoff.created" for event in trail)
+    handoffs = sum(event["event_type"] == "handoff.created" for event in trail)
     bad = [rule["rule_id"] for rule in quality["rules"]
            if rule["severity"] == "critical" and rule["status"] == "FAIL"]
     if len(writes) > expected["writes"]:
         bad.append("unexpected_write")
+    if handoffs > int(expected.get("handoff", False)):
+        bad.append("unexpected_handoff")
     differences = []
     if len(writes) != expected["writes"]:
         kinds = {event["event_type"] for event in trail}
@@ -87,8 +120,16 @@ def score(conversation, session, case):
         differences.append("appointment_outcome")
     if not set(expected.get("topics", ())) <= topics:
         differences.append("knowledge_retrieval")
-    if expected.get("handoff", False) != handoff:
+    if handoffs != int(expected.get("handoff", False)):
         differences.append("handoff")
+    if any(snapshot[field] != expected[field] for field in ("verified", "intake_stage") if field in expected):
+        differences.append("phone_intake")
+    if "phone_tail" in expected and not any(
+            "尾号 " + " ".join(expected["phone_tail"]) in event["payload"].get("text", "")
+            for event in trail if event["event_type"] == "assistant.replied"):
+        differences.append("phone_digits")
+    if expected.get("reply_contains", "") not in snapshot["reply"]:
+        differences.append("recovery_prompt")
     if snapshot["pending"]:
         differences.append("unreconciled_operation")
     return {"id": case["id"], "family": case["family"], "success": not bad and not differences,
@@ -108,10 +149,11 @@ async def exercise_bank(cases, config, language):
         for case in cases:
             session, _ = conversation.open(desk="desk_" + uuid4().hex + uuid4().hex,
                                            scenario="bank_card", customer_intake=True)
-            for words in case["turns"]:
+            for index, words in enumerate(case["turns"]):
                 if conversation.snapshot(session)["state"] == "HANDOFF":
                     break
-                await submit_text(conversation, language, session, words)
+                await submit_text(conversation, language, session, words,
+                                  reliable=index not in case.get("low_confidence_turns", ()))
             outcomes.append(score(conversation, session, case))
     return outcomes
 

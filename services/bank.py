@@ -144,6 +144,17 @@ def bank_contextual_agreement(text):
                              r"麻烦(?:你|您)(?:了|一下)?|帮我定下来(?:吧)?)", words))
 
 
+def bank_handoff_transcript(text, question):
+    words = bank_words(text).strip("？?")
+    words = re.sub(r"^(?:喂|你好|您好)+", "", words)
+    if re.fullmatch(r"(?:法|反|换)人工(?:客服)?[吧啊呀]?", words):
+        return question in {"handoff", "time_or_handoff", "phone"}
+    return bool(re.fullmatch(
+        r"(?:我(?:想|要|需要)|可不可以|可以|能不能|能否|能|麻烦(?:你|您)?|请)?(?:帮|给)?我?"
+        r"(?:接(?:通)?|联系|换|找|转接?)?(?:个|一位)?(?:人工(?:客服|坐席)?|真人(?:客服|坐席)?)"
+        r"(?:说话|聊聊|可以吗|行吗|吗|吧|一下)?", words))
+
+
 def bank_topics(text):
     if re.search(r"(?:信用卡|万事达|mastercard)", text, re.IGNORECASE):
         return ("scope",)

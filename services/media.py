@@ -10,7 +10,7 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioResampler
 
 from services.business import Rejection, ZONE
-from services.bank import (BANK_INTENT_HINT, BANK_SCENARIO, bank_contextual_agreement, bank_intent,
+from services.bank import (BANK_INTENT_HINT, BANK_SCENARIO, bank_contextual_agreement, bank_handoff_transcript, bank_intent,
                            bank_list_reference, bank_short_answer)
 from services.dialogue import parse, redacted
 from services.providers import ProviderError, recognize, synthesize
@@ -42,7 +42,8 @@ async def submit_text(conversation, language, session, text, event_id=None, expe
             and not snapshot["pending"] and state != "HANDOFF"):
         previous = conversation.intent_context(session) if bank else None
         contextual = previous is not None and (
-            bank_short_answer(text) or bank_list_reference(text, previous["offered_slots"]) is not None)
+            bank_short_answer(text) or bank_list_reference(text, previous["offered_slots"]) is not None
+            or config["handoff_recognition"] == "contextual" and bank_handoff_transcript(text, previous["question"]))
         if not contextual:
             try:
                 candidates = previous.get("preferred_slots") if previous else None

@@ -6,18 +6,21 @@ import secrets
 import time
 from datetime import datetime
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 from services.business import Rejection, Unknown, ZONE
 from services.bank import (BANK_AFTERNOON_WINDOW, BANK_APPOINTMENT, BANK_ASK_PREFERENCE, BANK_BRANCH, BANK_CHECKING, BANK_CONFIRM,
                            BANK_CONFIRM_FALLBACK, BANK_CONFIRM_HELP, BANK_DETOUR, BANK_FAQ, BANK_HANDOFF,
                            BANK_HANDOFF_QUESTION, BANK_NO_MATCH, BANK_OPENING, BANK_SCENARIO, BANK_TIME_OR_HANDOFF, BANK_WEEKDAY_WINDOW,
-                           bank_availability, bank_contextual_agreement, bank_intent, bank_list_reference, bank_short_answer,
+                           bank_availability, bank_contextual_agreement, bank_handoff_transcript, bank_intent,
+                           bank_list_reference, bank_short_answer,
                            bank_slot_offer, bank_slot_time,
                            bank_space, bank_topics, bank_words, is_bank_space)
 from services.bank_time import CLOCK, PERIOD, has_calendar_day, slot_matches, time_revision
 from services.dialogue import (BASELINE, OPENING, POLICY_DEFAULTS, POLICY_ID, SPOKEN_OPENING, SPOKEN_RETRY,
                                canonical_ids, denies_spoken_identity, parse, redacted, slot_label, spoken_identity)
-from services.customer import (CUSTOMER_OPENING, NAME_PROMPT, PHONE_PROMPT, customer_name, customer_phone,
-                               intake_stage)
+from services.customer import (CUSTOMER_OPENING, NAME_PROMPT, PHONE_PROMPT, PHONE_RETRY, customer_name, customer_phone,
+                               customer_phone_chunk, customer_phone_declined, intake_stage)
 from services.storage import Store, digest, emit, encode, events, ident
 
 PENDING = "state IN ('PREPARED','SENT','UNKNOWN')"
@@ -213,8 +216,9 @@ class Conversation:
             row = self._get(db, session)
             intake = db.execute("SELECT * FROM customer_intakes WHERE session=?", (session,)).fetchone()
             capturing_phone = intake and not row["scope"] and intake_stage(intake) in {"phone", "confirm"}
+            archive_text = text.translate(str.maketrans("拐勾", "79")) if capturing_phone else text
             emit(db, session, row["turn"], "user.received",
-                 {"text": redacted(text, minimum=3 if capturing_phone else 6)}, event_id)
+                 {"text": redacted(archive_text, minimum=1 if capturing_phone else 6)}, event_id)
             self._apply(db, row, text, suggestion, reliable, reverify)
         if before_send:
             before_send()
@@ -222,15 +226,59 @@ class Conversation:
             self.advance(session, force=True)
         return True
 
-    def _identify_customer(self, db, row, intake, text, action, target, reliable):
+    def _phone_turn(self, db, row, text, reliable):
+        session = row["id"]
+        stored = db.execute("SELECT encrypted FROM customer_phone_drafts WHERE session=?", (session,)).fetchone()
+        # Session-bound ciphertext keeps the digits out of transcripts and business records.
+        codec = AESGCM(hmac.digest(self.customer_key, b"phone-draft-v1", "sha256"))
+        prefix = ""
+        if stored:
+            encrypted = stored["encrypted"]
+            prefix = codec.decrypt(encrypted[:12], encrypted[12:], session.encode()).decode("ascii")
+        words = bank_words(text)
+        if reliable and re.search(r"重新(?:报|说|输)|从头(?:报|说|输)|前面(?:说)?错了|刚才(?:报|说)错了", words):
+            db.execute("DELETE FROM customer_phone_drafts WHERE session=?", (session,))
+            prefix = ""
+            text = re.sub(r"^.*?(?:重新(?:报|说|输)|从头(?:报|说|输)|(?:前面|刚才)(?:说|报)?错了)", "", text)
+            text = text.lstrip("，,。 ：:，")
+        if reliable and customer_phone_declined(words):
+            db.execute("DELETE FROM customer_phone_drafts WHERE session=?", (session,))
+            return None, "可以不在电话里报。您可以用文字输入，或者我帮您转人工。要我帮您转人工吗？", "refused"
+        chunk = customer_phone_chunk(text) if reliable else None
+        phone = (chunk if chunk and len(chunk) == 11 else customer_phone(text)) if reliable else None
+        if phone:
+            db.execute("DELETE FROM customer_phone_drafts WHERE session=?", (session,))
+            return phone, None, "complete"
+        start = chunk and re.fullmatch(r"1[3-9][0-9](?:[0-9]{4})?", chunk)
+        continuation = chunk and len(chunk) == 4 and len(prefix) in (3, 7)
+        if start or continuation:
+            prefix = chunk if start else prefix + chunk
+            if len(prefix) == 11:
+                db.execute("DELETE FROM customer_phone_drafts WHERE session=?", (session,))
+                return prefix, None, "complete"
+            nonce = secrets.token_bytes(12)
+            encrypted = nonce + codec.encrypt(nonce, prefix.encode("ascii"), session.encode())
+            db.execute("INSERT OR REPLACE INTO customer_phone_drafts VALUES(?,?)", (session, encrypted))
+            return None, "收到，请说" + ("中间四位。" if len(prefix) == 3 else "最后四位。"), "partial"
+        if prefix:
+            return None, "这组没收齐，请只说" + ("中间四位。" if len(prefix) == 3 else "最后四位。"), "retry"
+        return None, PHONE_RETRY, "retry"
+
+    def _identify_customer(self, db, row, intake, text, action, target, reliable, grouped):
         stage = intake_stage(intake)
         name, phone_key, tail = intake["name"], intake["phone_key"], intake["phone_tail"]
         follow_up = spoken_identity(text) if reliable else None
         updated = False
+        phone, phone_prompt, collection = None, None, None
+        if grouped and stage == "phone" and (
+                action not in {"off_topic", "bank_faq"} or reliable and customer_phone_declined(bank_words(text))):
+            phone, phone_prompt, collection = self._phone_turn(db, row, text, reliable)
+            emit(db, row["id"], row["turn"], "intake.phone", {"outcome": collection})
         if reliable and action not in {"off_topic", "bank_faq"}:
             supplied_name = None if follow_up is not None else customer_name(
                 text, unlabelled=stage == "name" and action in {"clarify", "unrecognized"})
-            phone = customer_phone(text)
+            if not grouped or stage != "phone":
+                phone = customer_phone(text)
             if supplied_name or phone:
                 name = supplied_name or name
                 if phone:
@@ -246,15 +294,18 @@ class Conversation:
         if not name:
             prompt = NAME_PROMPT
         elif not phone_key:
-            prompt = f"好的，{name}。{PHONE_PROMPT}" if updated else "麻烦再说一下完整的 11 位预约手机号，慢慢说就好。"
+            prompt = f"好的，{name}。{PHONE_PROMPT}" if updated else (
+                phone_prompt or "麻烦再说一下完整的 11 位预约手机号，慢慢说就好。")
         else:
             tail_spoken = " ".join(tail)
             prompt = f"我对一下，您叫{name}，手机号尾号 {tail_spoken}。是您本人办理吗？"
-        if reliable and action == "bank_faq":
+        if reliable and action == "bank_faq" and collection != "refused":
             prompt = self._bank_guidance(db, row, target) + prompt
         elif reliable and action == "off_topic":
             prompt = target + "咱们接着说预约。" + prompt
         question = "identity" if name and phone_key else "phone" if name else "name"
+        if collection == "refused":
+            question = "handoff"
         self._say(db, row, prompt, "VERIFYING", question=question)
         return None
 
@@ -268,6 +319,11 @@ class Conversation:
         previous = self._last_reply(db, session) if bank or action == "continue" else {}
         question = previous.get("question")
         short = bank_short_answer(text) if bank else None
+        policy = self._policy_config(db, row) if bank else {}
+        if bank and policy["handoff_recognition"] == "contextual" and bank_handoff_transcript(text, question):
+            if action != "handoff":
+                emit(db, session, row["turn"], "intent.handoff", {"outcome": "recovered" if reliable else "clarify"})
+            action, target = "handoff", None
         if short and question in {"handoff", "time_or_handoff", "paused"}:
             if reliable and ((question == "handoff" and short in {"yes", "polite", "transfer"}) or
                              (question == "time_or_handoff" and short == "transfer")):
@@ -293,6 +349,7 @@ class Conversation:
                 self._say(db, row, "刚才没听清，您是想转人工吗？", question="handoff")
                 return
             self._invalidate(db, row, "HANDOFF")
+            db.execute("DELETE FROM customer_phone_drafts WHERE session=?", (session,))
             pending = self._pending(db, session)
             latest = db.execute("SELECT state,receipt FROM operations WHERE session=? ORDER BY rowid DESC LIMIT 1",
                                 (session,)).fetchone()
@@ -345,7 +402,8 @@ class Conversation:
             appointment = None
             try:
                 if intake:
-                    identity = self._identify_customer(db, row, intake, text, action, target, reliable)
+                    identity = self._identify_customer(db, row, intake, text, action, target, reliable,
+                                                       policy["phone_collection"] == "grouped")
                     if identity is None:
                         return
                     verified, appointment, follow_up = identity
@@ -395,7 +453,7 @@ class Conversation:
             self._say(db, row, detour + reply, "RECONCILING")
             return
         rolling = bank and scope.startswith("C")
-        config = self._policy_config(db, row)
+        config = policy if bank else self._policy_config(db, row)
         choice_ids = previous.get("slot_options", [])
         preference = {key: previous[key] for key in ("question", "preference_slots")
                       if key in previous and question in {"day_preference", "time_preference"}}
@@ -903,6 +961,7 @@ class Conversation:
             if row["closed"]:
                 return
             self._invalidate(db, row, "SESSION_CLOSED")
+            db.execute("DELETE FROM customer_phone_drafts WHERE session=?", (session,))
             db.execute("UPDATE sessions SET closed=1,state='CLOSED' WHERE id=?", (session,))
             emit(db, session, row["turn"], "session.closed", {})
             self._write_session_result(db, row)

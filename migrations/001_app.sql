@@ -27,6 +27,9 @@ CREATE INDEX IF NOT EXISTS desk_call_order ON desk_calls(desk, created, session)
 CREATE TABLE IF NOT EXISTS customer_intakes (
  session TEXT PRIMARY KEY, name TEXT, phone_key TEXT, phone_tail TEXT
 );
+CREATE TABLE IF NOT EXISTS customer_phone_drafts (
+ session TEXT PRIMARY KEY, encrypted BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS customer_identity_key (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), secret BLOB NOT NULL
 );

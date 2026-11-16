@@ -16,6 +16,8 @@ POLICY_DEFAULTS = {
     "confirmation_lexicon": "standard",
     "knowledge_order": "spoken_order",
     "delegated_slot": "earliest",
+    "phone_collection": "grouped",
+    "handoff_recognition": "contextual",
 }
 ID_DIGITS = str.maketrans("〇零一二三四五六七八九０１２３４５６７８９", "001234567890123456789")
 IDENTITY_DENIAL = re.compile(r"不是(?:[我您你]?本人|我自己|给我)|非本人|(?:替|帮|给)(?:别人|他人|我爸|我妈|家人)|代办")

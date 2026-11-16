@@ -994,8 +994,45 @@ class Cases(unittest.TestCase):
         self.assertIn("clarification",candidate["evidence"]["diff"])
         self.assertEqual(candidate["status"],"rejected")
         self.assertIn("需要真实语音",candidate["evidence"]["reasons"][0])
-        self.assertEqual(len(candidate["evidence"]["generated_cases"]), 24)
-        self.assertEqual(len(candidate["evidence"]["generated_replays"]["candidate"]), 24)
+        self.assertEqual(len(candidate["evidence"]["generated_cases"]), 40)
+        self.assertEqual(len(candidate["evidence"]["generated_replays"]["candidate"]), 40)
+
+    def test_grouped_phone_drafts_are_private_until_complete_and_cleared_on_handoff(self):
+        app = create_app(self.settings())
+        desk = {"X-Desk-Token": "desk_" + "f" * 64}
+        with TestClient(app) as client:
+            conversation = app.state.conversation
+            with conversation.store.tx(write=True) as db:
+                db.execute("UPDATE policies SET config=? WHERE id='baseline'", (encode(
+                    {**BASELINE, "phone_collection": "grouped", "handoff_recognition": "contextual"}),))
+            result = client.post("/api/sessions", headers=desk,
+                                 json={"scenario": "bank_card", "customer_intake": True}).json()
+            session = result["session_id"]
+            path = "/api/sessions/" + session
+            auth = {"Authorization": "Bearer " + result["token"]}
+            def say(words, turn):
+                response = client.post(path + "/turns", headers=auth,
+                                       json={"text": words, "event_id": ident("evt"), "expected_turn": turn})
+                self.assertEqual(response.status_code, 200)
+                return response.json()["snapshot"]
+
+            say("林小满", 0)
+            self.assertIn("中间四位", say("幺三八", 1)["reply"])
+            self.assertIn("最后四位", say("一二三四", 2)["reply"])
+            with conversation.store.tx() as db:
+                draft = db.execute("SELECT encrypted FROM customer_phone_drafts WHERE session=?", (session,)).fetchone()[0]
+                self.assertNotIn(b"1381234", draft)
+                self.assertIsNone(db.execute("SELECT phone_key FROM customer_intakes WHERE session=?",
+                                             (session,)).fetchone()[0])
+            self.assertNotRegex(encode([e["payload"] for e in conversation.evidence(session)
+                                       if e["event_type"] == "user.received"]), r"幺三八|一二三四|1381234")
+            closed = say("反人工", 3)
+            self.assertTrue(closed["closed"])
+            self.assertEqual(closed["reply"], "好的，稍后由人工客服与您对接")
+            self.assertEqual(conversation.result(session)["status"], "handed_off")
+            self.assertEqual(sum(e["event_type"] == "handoff.created" for e in conversation.evidence(session)), 1)
+            with conversation.store.tx() as db:
+                self.assertIsNone(db.execute("SELECT encrypted FROM customer_phone_drafts WHERE session=?", (session,)).fetchone())
 
     def test_evolution_publishes_only_after_independent_scoring_and_observes_closed_calls(self):
         class Judge:

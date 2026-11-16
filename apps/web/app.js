@@ -128,6 +128,7 @@ function render(s) {
   chip($("stage"), s ? states[s.state] || "通话中" : "未开始", s?.pending ? "warn" : "");
   $("call-meta").textContent = s ? `会话 ${s.session_id.slice(-8)} · ${s.turn} 轮用户发言` : "尚未呼出";
   $("open-current-record").disabled = !s;
+  $("request-handoff").hidden = !usable || s?.state === "HANDOFF";
   const reply = s?.reply || "接通后，这里会显示客服的最新回复。";
   if ($("call-response").textContent !== reply) $("call-response").textContent = reply;
   renderDialer();
@@ -224,6 +225,7 @@ $("compose").onsubmit = (event) => {
 $("start").onclick = () => start(true);
 $("text-start").onclick = () => start(false);
 $("open-current-record").onclick = () => go("records",credential?.session_id);
+$("request-handoff").onclick = () => send("转人工");
 $("confirm-cancel").onclick = () => send("确认取消");
 $("keep-appointment").onclick = () => send("保留原来的预约");
 $("close").onclick = async () => {
