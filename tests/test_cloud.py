@@ -37,7 +37,7 @@ class Cloud(unittest.TestCase):
         self.assertEqual(values["ASR_ENDPOINT"],
                          "wss://llm-project.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference")
         self.assertTrue(values["LLM_ENDPOINT"].endswith("/compatible-mode/v1/chat/completions"))
-        workspace_key = "sk-ws-" + "test.header.payload_signature"
+        workspace_key = "sk-ws-test.header.payload_signature"
         self.assertEqual(cloud_settings(workspace_key, "")["DASHSCOPE_API_KEY"], workspace_key)
         with self.assertRaises(ValueError):
             cloud_settings(TEST_KEY, "llm-foo.example.org")

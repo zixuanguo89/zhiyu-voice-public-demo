@@ -119,7 +119,7 @@ async def started(ws, task, options):
         raise ProviderError("SPEECH_START_FAILED")
 
 
-async def recognize(provider, audio, on_text, on_ready=None):
+async def recognize(provider, audio, on_text, on_ready=None, *, with_sentence=False):
     task = str(uuid.uuid4())
     async with socket(provider) as ws:
         await started(ws, task, payload("asr", "recognition", provider[2], {
@@ -151,10 +151,17 @@ async def recognize(provider, audio, on_text, on_ready=None):
                     return
                 if event == "result-generated":
                     sentence = value.get("output", {}).get("sentence", {})
-                    if sentence.get("text"):
+                    if sentence.get("heartbeat") is True:
+                        continue
+                    if sentence.get("text") or sentence.get("sentence_end") is True:
                         confidence = sentence.get("confidence")
                         reliable = confidence is None or isinstance(confidence, (int, float)) and confidence >= 0.8
-                        await on_text(sentence["text"], sentence.get("sentence_end") is True, reliable)
+                        sentence_id = sentence.get("sentence_id")
+                        if type(sentence_id) is not int:
+                            sentence_id = sentence.get("begin_time")
+                        metadata = {"sentence_id": sentence_id} if with_sentence else {}
+                        await on_text(sentence.get("text") or "", sentence.get("sentence_end") is True, reliable,
+                                      **metadata)
         finally:
             sender.cancel()
             await asyncio.gather(sender, return_exceptions=True)

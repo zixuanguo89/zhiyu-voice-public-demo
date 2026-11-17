@@ -15,6 +15,9 @@ POLICY_DEFAULTS = {
     "confirmation_style": "standard",
     "confirmation_lexicon": "standard",
     "knowledge_order": "spoken_order",
+    "knowledge_router": "standard",
+    "schedule_recovery": "standard",
+    "intake_guard": "standard",
     "delegated_slot": "earliest",
     "phone_collection": "grouped",
     "handoff_recognition": "contextual",
@@ -30,7 +33,7 @@ IDENTITY_ASSERTION = re.compile(
     r"|(?:这张卡)?是?(?:给|为)我自己办(?:理)?的?|是?我自己来?办(?:理)?卡?)"
     r"(?P<request>(?:我想|我要|我需要|我来|想|要|帮我|请|查|改|换|取消|转人工).+)?"
 )
-IDENTITY_REQUEST = re.compile(r"(?:我想|我要|我需要|我来|想|要|帮我|请|查|改|换|取消|转人工).+")
+IDENTITY_REQUEST = re.compile(r"(?:我(?:只想|就想|只要|仅想|想|要|需要|来)|想|要|帮我|给我|请|查|改|换|取消|转人工).+")
 
 
 def canonical_ids(text):
@@ -75,8 +78,8 @@ def spoken_identity(text):
 
 def redacted(text, minimum=6):
     # Never persist verification codes or full telephone/ID numbers.
-    digits = "0-9０-９零〇洞一二两三四五六七八九幺"
-    return re.sub(rf"[{digits}](?:[\s,、，.。;；()（）\-－–—]*[{digits}]){{{minimum - 1},}}", "[已隐藏]", text)
+    digits = "0-9０-９零〇洞一二两三四五六七八九幺拐勾"
+    return re.sub(rf"[{digits}](?:[\s,/／、，.。;；()（）\-－–—]*[{digits}]){{{minimum - 1},}}", "[已隐藏]", text)
 
 
 def slot_label(slot):
@@ -86,6 +89,7 @@ def slot_label(slot):
 
 def parse(text, slots=()):
     clean = canonical_ids(text).strip().strip("。！!，,？?").strip()
+    clean = re.sub(r"^(?:确认[，,\s]*){2,}", "确认", clean)
     upper = clean.upper()
     if clean in AFFIRM:
         return "confirm", None

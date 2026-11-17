@@ -75,14 +75,14 @@
                   <span>挂断</span>
                 </button>
               </div>
-              <p class="hint" id="mic-status">呼出后可使用语音通话。</p>
+              <p class="hint" id="mic-status" role="status">呼出后可使用语音通话。</p>
               <div class="mic-input" id="mic-input" hidden>
                 <label for="mic-level">麦克风输入音量</label>
                 <meter id="mic-level" min="0" max="1" value="0"></meter>
                 <p class="hint" id="mic-input-hint" role="status"></p>
               </div>
               <details id="compose-panel" hidden>
-                <summary>改用文字交谈</summary>
+                <summary id="compose-label">打开文字输入</summary>
                 <form id="compose" class="compose">
                   <label class="sr-only" for="utterance">输入消息</label>
                   <input id="utterance" placeholder="输入消息" maxlength="500" autocomplete="off" disabled>

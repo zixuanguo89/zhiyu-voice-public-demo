@@ -10,7 +10,7 @@ from services.api import create_app
 from services.config import Settings
 
 
-async def recognize(_provider, queue, on_text, on_ready=None):
+async def recognize(_provider, queue, on_text, on_ready=None, **_options):
     if on_ready:
         on_ready()
     script = ["我叫林小满", "手机号是19900000991", "我是本人，我想预约办理 Visa 借记卡",

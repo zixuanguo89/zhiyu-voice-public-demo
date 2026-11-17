@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
+from services.bank import BANK_TERMINAL_STATES
 from services.business import Sandbox, ZONE
 from services.media import submit_text
 from services.orchestrator import Conversation
@@ -130,6 +131,20 @@ def score(conversation, session, case):
         differences.append("phone_digits")
     if expected.get("reply_contains", "") not in snapshot["reply"]:
         differences.append("recovery_prompt")
+    offer = snapshot["offer"] or {}
+    if any(offer.get(field) != expected[field] for field in ("action", "target_slot") if field in expected):
+        differences.append("wrong_offer")
+    if expected.get("no_offer") and snapshot["offer"] is not None:
+        differences.append("unexpected_offer")
+    if "state" in expected and snapshot["state"] != expected["state"]:
+        differences.append("dialogue_state")
+    for check in expected.get("reply_checks", ()):
+        utterance_replies = [event["payload"]["text"] for event in trail
+                             if event["event_type"] == "assistant.replied" and event["turn_id"] == check["turn"]]
+        combined = "".join(utterance_replies)
+        if (any(term not in combined for term in check.get("contains", ()))
+                or any(term in combined for term in check.get("excludes", ()))):
+            differences.append(f"response_at_turn_{check['turn']}")
     if snapshot["pending"]:
         differences.append("unreconciled_operation")
     return {"id": case["id"], "family": case["family"], "success": not bad and not differences,
@@ -150,7 +165,7 @@ async def exercise_bank(cases, config, language):
             session, _ = conversation.open(desk="desk_" + uuid4().hex + uuid4().hex,
                                            scenario="bank_card", customer_intake=True)
             for index, words in enumerate(case["turns"]):
-                if conversation.snapshot(session)["state"] == "HANDOFF":
+                if conversation.snapshot(session)["state"] in BANK_TERMINAL_STATES:
                     break
                 await submit_text(conversation, language, session, words,
                                   reliable=index not in case.get("low_confidence_turns", ()))

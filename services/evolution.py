@@ -77,6 +77,9 @@ def check_config(config):
             and config.get("phone_collection", POLICY_DEFAULTS["phone_collection"]) in {"full", "grouped"}
             and config.get("handoff_recognition", POLICY_DEFAULTS["handoff_recognition"]) in {"literal", "contextual"}
             and config.get("knowledge_order", "spoken_order") in {"spoken_order", "documents_first", "branch_first"}
+            and config.get("knowledge_router", "standard") in {"standard", "contextual"}
+            and config.get("schedule_recovery", "standard") in {"standard", "contextual"}
+            and config.get("intake_guard", "standard") in {"standard", "contextual"}
             and config.get("delegated_slot", "earliest") in {"earliest", "latest"}
             and config["clarification"].startswith("请")
             and config.get("bank_clarification", "请").startswith(("请", "我刚才没听明白"))
@@ -216,14 +219,14 @@ class Evolution:
                 raise Rejection("VALIDATION_BUDGET_EXHAUSTED")
             db.execute("INSERT INTO validation_queries VALUES(?,?,?)", (batch, candidate, self.clock()))
 
-    async def generate(self, progress=lambda stage: None):
+    async def generate(self, progress=lambda stage: None, *, development_cases=()):
         current = self.status()
         parent = current["active"]
         baseline = {**POLICY_DEFAULTS, **next(p["config"] for p in current["policies"] if p["id"] == parent)}
         cases = {name: dataset(name) for name in ("D", "R", "V")}
         policy = ident("policy")
         progress("生成并运行模拟用例")
-        generated = [*generate_cases(policy), *generate_intake_cases(policy)]
+        generated = [*generate_cases(policy), *generate_intake_cases(policy), *development_cases]
         verify_partitions({**cases, "D": [*cases["D"], *generated]})
         bank_baseline = await exercise_bank(generated, baseline, self.language)
         dev_results = exercise(cases["D"], baseline)
@@ -236,11 +239,17 @@ class Evolution:
                     "recent_failure_signals": self.recent_failure_signals(),
                     "generation": self.language.kind, "model": self.language.model}
         evidence["data_hashes"]["generated"] = digest(generated)
+        if development_cases:
+            evidence["external_development_cases"] = [case["id"] for case in development_cases]
+            evidence["data_hashes"]["external_development"] = digest(development_cases)
         progress("归因失败并生成策略候选")
         if self.language.kind == "dashscope":
             system = ("根据开发集失败改进客服策略。输出 JSON 对象，使用 baseline 的键，值为字符串。"
                       "clarification 和 bank_clarification 以 请 开头，只提示澄清日期、时间或业务。"
                       "confirmation_style 为 standard 或 concise。knowledge_order 为 spoken_order、documents_first 或 branch_first。"
+                      "knowledge_router 为 standard 或 contextual；后者从口语线索检索已有知识，例如询问到店需要准备哪些东西。"
+                      "schedule_recovery 为 standard 或 contextual；后者支持以已复述时间为起点计算半小时等偏移，也能识别暂不预约。"
+                      "intake_guard 为 standard 或 contextual；后者避免从联系电话咨询中采集姓名，并在没有公开客服号时说明人工跟进。"
                       "confirmation_lexicon 为 standard 或 conversational；如对候选时间明确同意却反复追问，可以选 conversational。"
                       "phone_collection 为 full 或 grouped，号码反复收不齐时 grouped 支持按段收集、重报和切换文字。"
                       "handoff_recognition 为 literal 或 contextual，后者识别当前转接上下文中的常见同音转写。"
@@ -249,7 +258,9 @@ class Evolution:
             request = {"baseline": baseline, "failures": failed,
                        "failure_clusters": clusters, "recent_failure_signals": evidence["recent_failure_signals"],
                        "bank_failures": [{"scenario": r["family"], "dialogue": r["transcript"], "reasons": r["failures"]}
-                                         for r in sorted(bank_baseline, key=lambda row: not row["family"].startswith("intake:"))
+                                         for r in sorted(bank_baseline, key=lambda row:
+                                                         (not row["id"].startswith("blind-"),
+                                                          not row["family"].startswith("intake:")))
                                          if not r["success"]][:10],
                        "cases": [{"id": c["id"], "turns": c["turns"]} for c in cases["D"]
                                  if any(c["id"] == r["id"] for r in failed)]}
@@ -267,6 +278,25 @@ class Evolution:
             return policy
         candidate = {**POLICY_DEFAULTS, **candidate}
         bank_candidate = await exercise_bank(generated, candidate, self.language)
+        bank_failures = [row for row in bank_candidate if not row["success"]]
+        options = {}
+        if any("knowledge_retrieval" in row["failures"] for row in bank_failures):
+            options["knowledge_router"] = "contextual"
+        if any(row["family"].startswith("blind:schedule") for row in bank_failures):
+            options["schedule_recovery"] = "contextual"
+        if any(row["family"].startswith("blind:intake") for row in bank_failures):
+            options["intake_guard"] = "contextual"
+        alternative = {**candidate, **options}
+        if alternative != candidate:
+            reviewed = await exercise_bank(generated, alternative, self.language)
+            before = sum(row["success"] for row in bank_candidate)
+            after = sum(row["success"] for row in reviewed)
+            preserves = all(new["safe"] and (not old["success"] or new["success"])
+                            for old, new in zip(bank_candidate, reviewed))
+            evidence["external_case_search"] = {"options": options, "before": before, "after": after,
+                                                "selected": preserves and after > before}
+            if preserves and after > before:
+                candidate, bank_candidate = alternative, reviewed
         intake_failures = [row for row in bank_candidate if row["family"].startswith("intake:") and not row["success"]]
         if intake_failures:
             alternative = {**candidate, "phone_collection": "grouped", "handoff_recognition": "contextual"}
@@ -279,7 +309,8 @@ class Evolution:
                 if safe and after > before:
                     candidate, bank_candidate = alternative, reviewed
         if self.language.kind == "dashscope" and candidate["confirmation_lexicon"] == "standard" and any(
-                entry["reason"] == "confirmation_unresolved" for entry in clusters):
+                entry["reason"] == "confirmation_unresolved" or entry["scenario"].startswith("blind:confirm")
+                for entry in clusters):
             alternative = {**candidate, "confirmation_lexicon": "conversational"}
             reviewed = await exercise_bank(generated, alternative, self.language)
             improves = sum(row["success"] for row in reviewed) > sum(row["success"] for row in bank_candidate)
@@ -311,6 +342,13 @@ class Evolution:
                          "text_validation": {"baseline": left, "candidate": right},
                          "generated_replays": {"baseline": bank_baseline, "candidate": bank_candidate},
                          "judge": judge, "judge_sample_mapping": judge_ids})
+        if development_cases:
+            external_ids = {case["id"] for case in development_cases}
+            evidence["external_development_comparison"] = {
+                label: {"passed": sum(row["success"] for row in outcomes if row["id"] in external_ids),
+                        "total": len(external_ids)}
+                for label, outcomes in (("baseline", bank_baseline), ("candidate", bank_candidate))
+            }
         comparison = paired_delta([[int(r["success"])] for r in left], [[int(r["success"])] for r in right])
         report = {"mode": "mock", "partition": "V", "repeats": 1, "isolation_verified": True,
                   "baseline_safe": all(r["safe"] for r in left), "candidate_safe": all(r["safe"] for r in right),

@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.websockets import WebSocketState
 
-from services.bank import BANK_SCENARIO
+from services.bank import BANK_SCENARIO, BANK_TERMINAL_STATES
 from services.business import Rejection, Sandbox
 from services.config import Settings
 from services.desk import CallDesk, desk_key
@@ -117,8 +117,8 @@ def create_app(settings=None):
                         await call.close()
                         if calls.get(session) is call:
                             calls.pop(session, None)
-                    elif snap["state"] == "HANDOFF" and snap["scenario"] == BANK_SCENARIO:
-                        call.begin_handoff(snap)
+                    elif snap["state"] in BANK_TERMINAL_STATES and snap["scenario"] == BANK_SCENARIO:
+                        call.finish_call(snap)
                     else:
                         call.follow_up(snap)
                 if time.monotonic() >= next_observation:
@@ -260,11 +260,12 @@ def create_app(settings=None):
         call = calls.get(session)
         if call and not call.finishing:
             call.cut()
+            call.send({"type": "partial", "text": ""})
         processed = await submit_text(conversation, language, session, body.text, body.event_id, body.expected_turn)
         snapshot = conversation.snapshot(session)
-        if processed and snapshot["scenario"] == BANK_SCENARIO and snapshot["state"] == "HANDOFF":
+        if processed and snapshot["scenario"] == BANK_SCENARIO and snapshot["state"] in BANK_TERMINAL_STATES:
             if call and not call.closed and call.browser_ready and call.asr_ready:
-                call.begin_handoff(snapshot)
+                call.finish_call(snapshot)
             else:
                 conversation.close(session)
                 save_report(conversation, session)

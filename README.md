@@ -20,7 +20,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 2. 可以先问「到店要带什么材料」，再说「我选第一个可用时段」。听到复述后改口「等一下，改成第二个时段」，再说「确认预约」。
 3. 在 **通话记录** 打开这通电话。通话中会自动显示新转写，完整手机号会隐藏。启用丢失回执时，结果先显示待核实，随后通过原操作编号查回回执。
 4. 在 **预约后台** 查看预约编号、客户全名和手机号尾号、网点、时段库存、业务操作单和 AI 办理轨迹。换一组姓名和号码再预约一次，就能看到两位客户的独立记录。
-5. 如需演示策略候选，展开预约后台的 **策略与评测**。默认管理员口令存于 `artifacts/.admin-token`，重启时更新，也可在 `.env` 设置 `ADMIN_TOKEN`。
+5. 打开预约后台的 **自主进化与评测**，输入管理员口令，点击 **运行自主进化**。默认管理员口令存于 `artifacts/.admin-token`，也可在 `.env` 设置 `ADMIN_TOKEN`。候选卡展示用例数量、评分、版本差异和发布决定，可下载原始证据。参见 [自主进化验收](docs/自主进化验收.md)。
 
 同一浏览器工作台内，用相同全名和手机号再次来电可查回原预约，并办理改期或取消。本机记录保存在 SQLite，重启后可继续使用。海棠银行科创支行是虚构演示网点，口头确认用于演示。请使用虚构资料。
 
@@ -42,13 +42,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 
 ## 公网演示
 
-项目可用根目录的 `Dockerfile` 和 `railway.toml` 部署到支持 HTTPS 和 WebSocket 的云托管。Railway 服务的公网端口使用 `8765`，持久卷挂载到 `/data`。公网模式为每个浏览器提供独立的模拟预约和通话记录。
-
-部署时在服务器的私有环境变量中设置高强度的 RECORDS_ADMIN_TOKEN 后，管理员可从「通话记录」或「预约后台」输入口令，查看所有访客的通话转写和预约。公开演示请使用虚构资料。
+项目可用根目录的 `Dockerfile` 和 `railway.toml` 部署到支持 HTTPS 和 WebSocket 的云托管。Railway 服务的公网端口使用 `8765`，持久卷挂载到 `/data`。公网模式为每个浏览器提供独立的模拟预约和通话记录。部署时在服务器的私有环境变量中设置高强度的 `RECORDS_ADMIN_TOKEN` 后，管理员可从「通话记录」或「预约后台」输入口令，查看所有访客的通话转写和预约。公开演示请使用虚构资料。
 
 `render.yaml` 使用 Render 免费实例，导入 Blueprint 时在 Render 中配置 `DASHSCOPE_API_KEY`。云语音仍按语音服务商的额度计费。免费实例休眠或重启后，SQLite 演示数据会清空。
 
 在托管平台的服务变量中配置语音提供商、模型和密钥。语音密钥由服务端读取。上传源码时只使用部署包中的文件，本地配置和既有记录留在本机。上线后先访问 `/health` 确认 `public_demo` 和 `microphone` 都为 `true`，再用实际公网地址开启麦克风做一次端到端验收。
+
+### Oracle 云主机部署
+
+在云主机安装 Docker 和 Compose，放行公网 TCP 80 和 443。将 `ZHIYU_PUBLIC_HOST`（公网 IP 或域名）和 `DASHSCOPE_API_KEY` 写入服务器上的私有环境文件，再从项目根目录运行以下命令。
+
+```bash
+docker compose --env-file /path/to/private.env -f compose.oracle.yaml up -d --build
+```
+
+浏览器通过 HTTPS 打开公网地址，代理自动申请并续期证书。预约与通话数据库保存在 `appointments` 数据卷中，重新构建容器和重启主机后仍可读取。备份时应一起保存该数据卷内的两份 SQLite 数据库。通过 `/health` 确认 `persistent_storage`、`public_demo` 和 `microphone` 均为 `true`。
 
 ## 运行验收
 

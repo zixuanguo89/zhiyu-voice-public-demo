@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "language": "zh-CN",
+  "cases": [
+    {
+      "id": "number-01",
+      "category": "number",
+      "text": "请记录测试联系电话，一零零零零零零零零零一。",
+      "pause_parts": ["请记录测试联系电话", "一零零", "零零零零", "零零零一"],
+      "critical_fields": [
+        {"name": "test_phone", "value": "10000000001", "accepted_texts": ["一零零零零零零零零零一", "幺零零零零零零零零零幺", "10000000001"]}
+      ]
+    },
+    {
+      "id": "number-02",
+      "category": "number",
+      "text": "我的预约编号是零六零九三七，开头的零也要保留。",
+      "critical_fields": [
+        {"name": "reservation_code", "value": "060937", "accepted_texts": ["零六零九三七", "060937"]}
+      ]
+    },
+    {
+      "id": "number-03",
+      "category": "number",
+      "text": "我的预约编号是零六零九三四。",
+      "critical_fields": [
+        {"name": "reservation_code", "value": "060934", "accepted_texts": ["零六零九三四", "060934"]}
+      ]
+    },
+    {
+      "id": "datetime-01",
+      "category": "datetime",
+      "text": "帮我约在十二月十八日上午九点零五分。",
+      "critical_fields": [
+        {"name": "date", "value": "12-18", "accepted_texts": ["十二月十八日", "十二月十八号", "12月18日", "12月18号", "12-18"]},
+        {"name": "time", "value": "09:05", "accepted_texts": ["上午九点零五分", "上午九点零五", "上午9点05分", "上午9点5分", "上午9:05", "09:05"]}
+      ]
+    },
+    {
+      "id": "datetime-02",
+      "category": "datetime",
+      "text": "十二月二十一日下午两点四十分，我有空。",
+      "critical_fields": [
+        {"name": "date", "value": "12-21", "accepted_texts": ["十二月二十一日", "十二月二十一号", "12月21日", "12月21号", "12-21"]},
+        {"name": "time", "value": "14:40", "accepted_texts": ["下午两点四十分", "下午二点四十分", "下午两点四十", "下午2点40分", "下午2点40", "下午2:40", "14:40"]}
+      ]
+    },
+    {
+      "id": "confusable-01",
+      "category": "confusable",
+      "text": "我说的是下周四下午四点十四分。",
+      "critical_fields": [
+        {"name": "day", "value": "next_thursday", "accepted_texts": ["下周四", "下星期四", "下个星期四"]},
+        {"name": "time", "value": "16:14", "accepted_texts": ["下午四点十四分", "下午四点十四", "下午4点14分", "下午4点14", "下午4:14", "16:14"]}
+      ]
+    },
+    {
+      "id": "confusable-02",
+      "category": "confusable",
+      "text": "我说的是下周四下午四点四十分。",
+      "critical_fields": [
+        {"name": "day", "value": "next_thursday", "accepted_texts": ["下周四", "下星期四", "下个星期四"]},
+        {"name": "time", "value": "16:40", "accepted_texts": ["下午四点四十分", "下午四点四十", "下午4点40分", "下午4点40", "下午4:40", "16:40"]}
+      ]
+    },
+    {
+      "id": "negation-01",
+      "category": "negation",
+      "text": "不用转人工，我只想确认预约时间。",
+      "critical_fields": [
+        {"name": "transfer", "value": "deny", "accepted_texts": ["不用转人工", "不用转接人工", "不需要转人工", "不需要转接人工"]},
+        {"name": "request", "value": "confirm_reservation_time", "accepted_texts": ["确认预约时间"]}
+      ]
+    },
+    {
+      "id": "negation-02",
+      "category": "negation",
+      "text": "不要取消预约，我只想改时间。",
+      "critical_fields": [
+        {"name": "cancel", "value": "deny", "accepted_texts": ["不要取消预约", "别取消预约"]},
+        {"name": "request", "value": "reschedule", "accepted_texts": ["改时间", "更改时间", "修改时间"]}
+      ]
+    },
+    {
+      "id": "negation-03",
+      "category": "negation",
+      "text": "这次不要改时间，请直接取消预约。",
+      "critical_fields": [
+        {"name": "reschedule", "value": "deny", "accepted_texts": ["不要改时间", "别改时间", "不要更改时间"]},
+        {"name": "cancel", "value": "request", "accepted_texts": ["请直接取消预约", "请取消预约", "直接取消预约"], "forbidden_texts": ["不要直接取消预约", "不取消预约", "不要取消预约", "别取消预约"]}
+      ]
+    },
+    {
+      "id": "correction-01",
+      "category": "correction",
+      "text": "先约星期三，等一下，我改成星期四上午十点。",
+      "critical_fields": [
+        {"name": "original_day", "value": "wednesday", "accepted_texts": ["星期三", "周三"]},
+        {"name": "correction_marker", "value": "replace", "accepted_texts": ["我改成", "改成"]},
+        {"name": "final_day", "value": "thursday", "accepted_texts": ["星期四", "周四"]},
+        {"name": "final_time", "value": "10:00", "accepted_texts": ["上午十点", "上午10点", "上午10:00", "10:00"]}
+      ]
+    },
+    {
+      "id": "correction-02",
+      "category": "correction",
+      "text": "尾号是五八六三，不对，尾号是五八六四。",
+      "critical_fields": [
+        {"name": "original_suffix", "value": "5863", "accepted_texts": ["五八六三", "5863"]},
+        {"name": "correction_marker", "value": "reject_previous", "accepted_texts": ["不对", "说错了"]},
+        {"name": "final_suffix", "value": "5864", "accepted_texts": ["五八六四", "5864"]}
+      ]
+    },
+    {
+      "id": "correction-03",
+      "category": "correction",
+      "text": "我想取消预约，等等，还是保留预约吧。",
+      "critical_fields": [
+        {"name": "original_intent", "value": "cancel", "accepted_texts": ["想取消预约"]},
+        {"name": "final_intent", "value": "keep", "accepted_texts": ["还是保留预约"]}
+      ]
+    },
+    {
+      "id": "control-01",
+      "category": "control",
+      "text": "请转人工，我想问一下预约的事。",
+      "critical_fields": [
+        {"name": "transfer", "value": "request", "accepted_texts": ["请转人工", "请转接人工"], "forbidden_texts": ["无需转人工", "不用转人工", "不要转人工", "请别转人工", "不需要转人工"]}
+      ]
+    },
+    {
+      "id": "control-02",
+      "category": "control",
+      "text": "刚才没听清，麻烦你再说一遍。",
+      "critical_fields": [
+        {"name": "request", "value": "repeat", "accepted_texts": ["再说一遍", "再说一遍吧"]}
+      ]
+    },
+    {
+      "id": "control-03",
+      "category": "control",
+      "text": "对，这个时间可以，我确认预约。",
+      "critical_fields": [
+        {"name": "request", "value": "confirm", "accepted_texts": ["我确认预约", "确认预约"], "forbidden_texts": ["不确认预约", "不用确认预约", "不要确认预约", "不能确认预约"]}
+      ]
+    }
+  ]
+}

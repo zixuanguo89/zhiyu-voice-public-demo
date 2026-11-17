@@ -10,7 +10,7 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioResampler
 
 from services.business import Rejection, ZONE
-from services.bank import (BANK_INTENT_HINT, BANK_SCENARIO, bank_contextual_agreement, bank_handoff_transcript, bank_intent,
+from services.bank import (BANK_INTENT_HINT, BANK_SCENARIO, BANK_TERMINAL_STATES, bank_contextual_agreement, bank_handoff_transcript, bank_intent,
                            bank_list_reference, bank_short_answer)
 from services.dialogue import parse, redacted
 from services.providers import ProviderError, recognize, synthesize
@@ -29,17 +29,19 @@ async def submit_text(conversation, language, session, text, event_id=None, expe
         slots = [slot for slot in slots if slot["available"] and
                  not (current.get("status") == "active" and slot["id"] == current.get("slot"))]
         today = datetime.fromtimestamp(conversation.clock(), ZONE).date()
-        action, _ = bank_intent(text, slots, today=today)
+        action, _ = bank_intent(text, slots, today=today, contextual_knowledge=config["knowledge_router"] == "contextual",
+                                schedule_recovery=config["schedule_recovery"] == "contextual")
         hint = f"{BANK_INTENT_HINT} {hint}"
         if snapshot["offer"]:
             hint += " 正在等客户确认上一个时段。没听清时返回 clarify，不能猜测客户改选。"
-            if config["confirmation_lexicon"] == "conversational" and bank_contextual_agreement(text):
+            if config["confirmation_lexicon"] == "conversational" and bank_contextual_agreement(
+                    text, snapshot["offer"]["action"]):
                 action = "agree"
     else:
         action, _ = parse(text, slots)
     suggestion = None
     if (verified and reliable and language.kind == "dashscope" and action in {"unrecognized", "clarify"}
-            and not snapshot["pending"] and state != "HANDOFF"):
+            and not snapshot["pending"] and state not in BANK_TERMINAL_STATES):
         previous = conversation.intent_context(session) if bank else None
         contextual = previous is not None and (
             bank_short_answer(text) or bank_list_reference(text, previous["offered_slots"]) is not None
@@ -68,6 +70,9 @@ class VoiceCall:
         self.reply_task = None
         self.generation = 0
         self.partial = False
+        self.partial_turn = None
+        self.asr_sentence = None
+        self.finished_sentence = None
         self.pending_reply = None
         self.browser_ready = False
         self.asr_ready = False
@@ -119,7 +124,8 @@ class VoiceCall:
 
     async def asr(self):
         try:
-            await recognize(self.settings.providers["ASR"], self.audio, self.on_text, self.mark_asr_ready)
+            await recognize(self.settings.providers["ASR"], self.audio, self.on_text, self.mark_asr_ready,
+                            with_sentence=True)
         except ProviderError as exc:
             self.record("provider.failed", {"stage": "ASR", "code": str(exc)})
             self.send({"type": "failure", "message": "语音识别已断开。请重连或使用文本办理。"})
@@ -140,7 +146,7 @@ class VoiceCall:
             if snap["turn"] == 0:
                 self.reply_task = self.spawn(self.speak(snap["reply"], 0, self.generation))
 
-    async def on_text(self, text, stable, reliable):
+    async def on_text(self, text, stable, reliable, *, sentence_id=None):
         if self.closed or self.finishing:
             return
         try:
@@ -148,6 +154,18 @@ class VoiceCall:
         except Rejection:
             await self.close()
             return
+        if type(sentence_id) is int:
+            if self.finished_sentence is not None and sentence_id <= self.finished_sentence:
+                return
+            if self.asr_sentence is not None and sentence_id != self.asr_sentence:
+                if sentence_id < self.asr_sentence:
+                    return
+                self.partial = False
+                self.partial_turn = None
+                self.send({"type": "partial", "text": ""})
+            self.asr_sentence = sentence_id
+            if stable:
+                self.finished_sentence = sentence_id
         speech = "".join(character for character in text if character.isalnum())
         replying = self.reply_task is not None and not self.reply_task.done()
         filler_only = all(character in "嗯啊哦呃额唔噢哎咳哼" for character in speech)
@@ -155,6 +173,7 @@ class VoiceCall:
         if not speech or not self.partial and (uncertain_start or replying and filler_only):
             if stable and self.partial:
                 self.partial = False
+                self.partial_turn = None
                 self.send({"type": "partial", "text": ""})
             return
         if not self.partial:
@@ -162,12 +181,16 @@ class VoiceCall:
                 self.cut(reason="speech")
             self.partial = True
             self.segment += 1
-            self.partial_intake = self.conversation.snapshot(self.session)["intake_stage"]
+            snapshot = self.conversation.snapshot(self.session)
+            self.partial_turn = snapshot["turn"]
+            self.partial_intake = snapshot["intake_stage"]
         if not stable:
-            self.send({"type": "partial", "text": "正在收集预约资料…" if self.partial_intake else redacted(text)})
+            if self.partial_turn == self.conversation.snapshot(self.session)["turn"]:
+                self.send({"type": "partial", "text": "正在收集预约资料…" if self.partial_intake else redacted(text)})
             return
         self.partial = False
-        turn = self.conversation.snapshot(self.session)["turn"]
+        turn = self.partial_turn
+        self.partial_turn = None
         self.record("audio.asr_final", {"reliable": reliable, "segment": self.segment}, turn)
         self.send({"type": "partial", "text": ""})
         self.reply_task = self.spawn(self.answer(text, reliable, turn, self.generation))
@@ -178,8 +201,8 @@ class VoiceCall:
                                           expected_turn=turn, reliable=reliable)
             if processed and generation == self.generation:
                 snap = self.conversation.snapshot(self.session)
-                if snap["state"] == "HANDOFF" and snap["scenario"] == BANK_SCENARIO:
-                    self.begin_handoff(snap)
+                if snap["state"] in BANK_TERMINAL_STATES and snap["scenario"] == BANK_SCENARIO:
+                    self.finish_call(snap)
                     return
                 if snap["pending"]:
                     self.pending_reply = (snap["turn"], generation)
@@ -188,14 +211,14 @@ class VoiceCall:
         except Rejection:
             self.send({"type": "failure", "message": "会话已关闭或失效，请开始新的模拟通话。"})
 
-    def begin_handoff(self, snapshot):
+    def finish_call(self, snapshot):
         if self.finishing:
             return
         self.finishing = True
         self.pending_reply = None
-        self.reply_task = self.spawn(self.finish_handoff(snapshot))
+        self.reply_task = self.spawn(self.play_goodbye(snapshot))
 
-    async def finish_handoff(self, snapshot):
+    async def play_goodbye(self, snapshot):
         try:
             self.send({"type": "handoff"})
             self.send({"type": "state"})
@@ -232,10 +255,12 @@ class VoiceCall:
                         sequence += 1
             if buffer and len(buffer) % 2 == 0:
                 await self.play(buffer, generation, sequence)
-            self.send({"type": "speech_end", "generation": generation})
         except ProviderError as exc:
             self.record("provider.failed", {"stage": "TTS", "code": str(exc)}, turn)
             self.send({"type": "failure", "message": "播报暂不可用，请查看文字回复。"})
+        finally:
+            if self.generation == generation:
+                self.send({"type": "speech_end", "generation": generation})
 
     async def close(self):
         if self.closed:
@@ -246,7 +271,7 @@ class VoiceCall:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         snapshot = self.conversation.snapshot(self.session)
-        if snapshot["state"] == "HANDOFF" and snapshot["scenario"] == BANK_SCENARIO:
+        if snapshot["state"] in BANK_TERMINAL_STATES and snapshot["scenario"] == BANK_SCENARIO:
             self.conversation.close(self.session)
             save_report(self.conversation, self.session)
 
@@ -266,8 +291,15 @@ class MediaCall(VoiceCall):
 
             @channel.on("message")
             def message(value):
-                if isinstance(value, str):
+                if value == "detach":
+                    self.spawn(self.close())
+                elif isinstance(value, str):
                     self.control(value)
+
+            @channel.on("close")
+            def channel_closed():
+                if not self.closed:
+                    self.spawn(self.close())
 
         @self.peer.on("track")
         def track_added(track):
@@ -291,14 +323,18 @@ class MediaCall(VoiceCall):
 
     async def pump(self, track):
         resample = AudioResampler(format="s16", layout="mono", rate=16000)
+        timeout = 20
         try:
             while not self.closed:
-                frame = await track.recv()
+                frame = await asyncio.wait_for(track.recv(), timeout)
+                timeout = 5
                 for converted in resample.resample(frame):
                     chunk = bytes(converted.planes[0])[: converted.samples * 2]
                     self.input_audio(chunk)
         except MediaStreamError:
             self.input_audio(None)
+        except TimeoutError:
+            await self.close()
 
     async def play(self, chunk, generation, sequence):
         if generation != self.generation or not self.channel or self.channel.readyState != "open":

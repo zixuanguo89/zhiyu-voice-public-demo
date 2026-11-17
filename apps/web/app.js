@@ -1,7 +1,9 @@
 const $ = (id) => document.getElementById(id);
 const label = {call:"打电话", records:"通话记录", booking:"预约后台"};
 const states = {VERIFYING:"等待身份确认",COLLECTING:"收集需求",OFFERING:"选择时段",CONFIRMING:"等待确认",
-  EXECUTING:"正在办理",RECONCILING:"结果核实中",COMPLETED:"办理完成",HANDOFF:"已登记人工",CLOSED:"通话已结束"};
+  EXECUTING:"正在办理",RECONCILING:"结果核实中",COMPLETED:"办理完成",HANDOFF:"已登记人工",
+  ENDING:"正在结束通话",CLOSED:"通话已结束"};
+const ending = (call) => ["HANDOFF", "ENDING"].includes(call?.state);
 const kinds = {"session.disclosed":"AI 身份与来意说明","user.received":"用户发言","assistant.replied":"客服回复",
   "identity.verified":"身份核验通过","identity.rejected":"核验未通过","appointment.read":"查询预约",
   "bank.guidance":"说明到店办理须知",
@@ -15,6 +17,13 @@ let snapshot, adminToken = "", view = "call", features = {}, sent = false, trans
 let recordsToken = "";
 let chatKey = "", toastTimer;
 let dialing = false, hangingUp = false, voiceDuration = 0;
+let recovering = credential?.session_id, needsDeskLink = Boolean(recovering), linkingDesk = false;
+const composeKey = (id) => "zhiyu.compose." + id;
+function rememberCompose() {
+  if (!credential || !snapshot || snapshot.closed) return;
+  const value = $("utterance").value;
+  sessionStorage.setItem(composeKey(credential.session_id), JSON.stringify({value, open:$("compose-panel").open}));
+}
 const deskToken = localStorage.getItem("zhiyu.desk") ||
   "desk_" + (crypto.randomUUID() + crypto.randomUUID()).replaceAll("-","");
 localStorage.setItem("zhiyu.desk",deskToken);
@@ -39,7 +48,11 @@ async function api(path, {method="GET", token="", body, headers={}} = {}) {
     ...(token ? {Authorization:"Bearer " + token} : {}), ...headers
   }, body: body === undefined ? undefined : JSON.stringify(body)});
   const data = await response.json();
-  if (!response.ok) throw new Error(data.code || data.detail || "服务暂不可用");
+  if (!response.ok) {
+    const error = new Error(data.code || data.detail || "服务暂不可用");
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 function session(path="", options={}) {
@@ -103,22 +116,23 @@ function renderDialer() {
   const usable = snapshot && !snapshot.closed;
   const online = transport?.readyAt != null;
   const muted = online && transport.microphoneMuted;
-  const phase = hangingUp ? "connecting" : online ? "connected" : dialing || transport ? "connecting"
+  const phase = hangingUp ? "connecting" : online ? "connected" : dialing || transport || recovering ? "connecting"
     : usable ? "text" : snapshot?.closed ? "ended" : "idle";
   const caption = hangingUp ? "正在挂断" : online ? muted ? "已接通 · 静音" : "已接通"
-    : transport ? "正在接通语音" : dialing ? "正在呼出"
+    : transport ? "正在接通语音" : dialing ? "正在呼出" : recovering ? "正在恢复通话"
     : usable ? "文字通话中" : snapshot?.closed ? "通话已结束" : "待呼出";
   $("phone-face").dataset.phase = phase;
   if ($("call-state").textContent !== caption) $("call-state").textContent = caption;
   $("dial-controls").hidden = Boolean(usable);
   $("call-controls").hidden = !usable;
-  $("start").disabled = dialing || !features.microphone;
+  $("start").disabled = dialing || Boolean(recovering) || !features.microphone;
   $("start-label").textContent = snapshot?.closed ? "重新呼出" : "呼出电话";
-  $("text-start").disabled = dialing;
+  $("text-start").disabled = dialing || Boolean(recovering);
   $("close").disabled = !usable || hangingUp;
-  $("mic").disabled = !usable || snapshot?.state === "HANDOFF" || dialing || hangingUp ||
+  $("mic").disabled = !usable || ending(snapshot) || dialing || hangingUp ||
     !features.microphone || Boolean(transport && !online);
   $("mic-label").textContent = online ? muted ? "取消静音" : "静音" : "接通语音";
+  $("compose-label").textContent = online && !muted ? "打开文字输入（麦克风仍开启）" : "打开文字输入";
   $("mic").setAttribute("aria-pressed", String(Boolean(muted)));
   renderClock();
 }
@@ -128,14 +142,14 @@ function render(s) {
   chip($("stage"), s ? states[s.state] || "通话中" : "未开始", s?.pending ? "warn" : "");
   $("call-meta").textContent = s ? `会话 ${s.session_id.slice(-8)} · ${s.turn} 轮用户发言` : "尚未呼出";
   $("open-current-record").disabled = !s;
-  $("request-handoff").hidden = !usable || s?.state === "HANDOFF";
+  $("request-handoff").hidden = !usable || ending(s);
   const reply = s?.reply || "接通后，这里会显示客服的最新回复。";
   if ($("call-response").textContent !== reply) $("call-response").textContent = reply;
   renderDialer();
   $("compose-panel").hidden = !usable;
-  $("send").disabled = !usable || s.state === "HANDOFF" || sent;
+  $("send").disabled = !usable || ending(s) || sent;
   renderCancelActions(s);
-  $("utterance").disabled = !usable || s.state === "HANDOFF";
+  $("utterance").disabled = !usable || ending(s);
   const prompts = {name:"例如：我叫林小满",phone:"输入 11 位演示手机号",confirm:"例如：是我本人"};
   $("utterance").placeholder = prompts[s?.intake_stage] || "输入消息";
 }
@@ -163,13 +177,24 @@ async function refresh() {
   pendingRefresh = (async () => {
     const s = await session();
     if (id !== credential?.session_id || s.turn < (snapshot?.turn || 0)) return;
+    const resume = recovering === id;
+    if (resume) recovering = null;
     render(s);
+    if (s.closed) sessionStorage.removeItem(composeKey(id));
+    else if (resume) {
+      const draft = JSON.parse(sessionStorage.getItem(composeKey(id)) || "null");
+      if (draft) {
+        $("utterance").value = draft.value;
+        $("compose-panel").open = draft.open || Boolean(draft.value);
+      }
+      $("mic-status").textContent = features.microphone ? "通话已恢复，可继续发文字或接通语音。" : "当前通话可通过文字办理。";
+    }
     if (s.closed && transport) stopVoice();
   })().finally(() => { pendingRefresh = null; });
   return pendingRefresh;
 }
 async function start(withVoice) {
-  if (dialing || (snapshot && !snapshot.closed)) return;
+  if (dialing || recovering || (snapshot && !snapshot.closed)) return;
   dialing = true;
   voiceDuration = 0;
   renderDialer();
@@ -181,12 +206,16 @@ async function start(withVoice) {
     }});
     if (pendingRefresh) await pendingRefresh.catch(() => {});
     credential = {session_id:data.session_id,token:data.token};
+    needsDeskLink = false;
+    $("utterance").value = "";
     sessionStorage.setItem("zhiyu",JSON.stringify(credential));
     render(data.snapshot);
     await refresh();
     if (call) await connectVoice(call);
     else {
-      $("mic-status").textContent = "可发送文字，或接通语音继续办理。";
+      $("mic-status").textContent = features.microphone
+        ? "可发送文字，或接通语音继续办理。"
+        : "当前通话可通过文字办理。";
       $("compose-panel").open = true;
       $("utterance").focus();
     }
@@ -198,30 +227,61 @@ async function start(withVoice) {
     renderDialer();
   }
 }
-async function send(text) {
-  if (!snapshot || snapshot.closed || snapshot.state === "HANDOFF" || transport?.finishing || sent || !text.trim()) return;
+let unsentTurn = null;
+const retryTextNotice = "未能确认文字已送达，内容已保留。请在当前通话中重试。";
+async function send(text, input) {
+  if (!snapshot || snapshot.closed || ending(snapshot) || transport?.finishing || sent || !text.trim()) return;
   sent = true;
   $("send").disabled = true;
   renderCancelActions(snapshot);
   transport?.interruptPlayback();
+  const callId = credential.session_id;
+  const expected_turn = snapshot.turn;
+  const sameAttempt = unsentTurn?.callId === callId && unsentTurn.text === text;
+  const event_id = sameAttempt ? unsentTurn.event_id : "evt_" + crypto.randomUUID().replaceAll("-","");
+  unsentTurn = {callId, text, event_id};
+  const matchingWords = (value) => value.replace(/[\s，,。.!！?？]/g,"");
+  let delivered = false;
   try {
-    const event_id = "evt_" + crypto.randomUUID().replaceAll("-","");
-    const result = await session("/turns",{method:"POST",body:{text,event_id,expected_turn:snapshot.turn}});
-    if (!result.processed) notify("会话已更新，请查看当前进度后重试。");
-    await refresh();
-  } catch (e) { notify(e.message); }
+    const result = await session("/turns",{method:"POST",body:{text,event_id,expected_turn}});
+    delivered = result.processed;
+    if (credential?.session_id === callId && result.snapshot.turn >= snapshot.turn) render(result.snapshot);
+  } catch {
+    // A response can be lost after the turn was committed.
+  }
   finally {
+    if (!delivered && credential?.session_id === callId) {
+      const events = await session("/events").catch(() => []);
+      delivered = events.some((event) => event.event_id === event_id ||
+        (event.event_type === "user.received" && event.turn_id === expected_turn + 1 &&
+          matchingWords(event.payload.text || "") === matchingWords(text)));
+    }
+    await refresh().catch(() => {});
+    if (delivered) {
+      if (sameAttempt && $("notice").textContent === retryTextNotice) {
+        clearTimeout(toastTimer);
+        $("notice").hidden = true;
+      }
+      unsentTurn = null;
+      if (input?.value === text) {
+        input.value = "";
+        rememberCompose();
+      }
+    } else if (credential?.session_id === callId && !snapshot?.closed) {
+      notify(input ? retryTextNotice : "未能确认操作已送达，请先查看当前通话进度。");
+    }
     sent = false;
-    $("send").disabled = !snapshot || snapshot.closed || snapshot.state === "HANDOFF";
+    $("send").disabled = !snapshot || snapshot.closed || ending(snapshot);
     renderCancelActions(snapshot);
   }
 }
 $("compose").onsubmit = (event) => {
   event.preventDefault();
-  const text = $("utterance").value;
-  $("utterance").value = "";
-  send(text);
+  const input = $("utterance");
+  send(input.value, input);
 };
+$("utterance").addEventListener("input", rememberCompose);
+$("compose-panel").addEventListener("toggle", rememberCompose);
 $("start").onclick = () => start(true);
 $("text-start").onclick = () => start(false);
 $("open-current-record").onclick = () => go("records",credential?.session_id);
@@ -237,7 +297,11 @@ $("close").onclick = async () => {
     await session("/close",{method:"POST"});
     await refresh();
     notify("通话已结束，对话和结果已存入通话记录。");
-  } catch (e) { notify(e.message); }
+  } catch {
+    await refresh().catch(() => {});
+    if (snapshot?.closed) notify("通话已结束，对话和结果已存入通话记录。");
+    else notify("未能确认通话已结束。可以再次点击挂断。");
+  }
   finally {
     hangingUp = false;
     renderDialer();
@@ -641,11 +705,9 @@ class Voice {
     this.channel.binaryType = "arraybuffer";
     this.channel.onmessage = ({data}) => typeof data === "string" ? this.message(JSON.parse(data)) : this.play(data);
     this.channel.onopen = () => this.channel.send("ready");
+    this.channel.onclose = this.channel.onerror = () => this.connectionLost();
     this.peer.onconnectionstatechange = () => {
-      if (transport === this && ["failed","disconnected"].includes(this.peer.connectionState)) {
-        stopVoice();
-        notify("语音连接已断开，可重新开启麦克风。");
-      }
+      if (["failed","disconnected","closed"].includes(this.peer.connectionState)) this.connectionLost();
     };
     await this.peer.setLocalDescription(await this.peer.createOffer());
     if (this.peer.iceGatheringState !== "complete") {
@@ -661,6 +723,13 @@ class Voice {
     await this.peer.setRemoteDescription(answer);
     if (!this.closed) sessionStorage.setItem("voice-" + snapshot.session_id,"1");
   }
+  connectionLost() {
+    if (transport !== this || this.closed) return;
+    $("mic-status").textContent = this.finishing ? "通话已结束。" :
+      "语音连接已断开，可以重新接通或继续文字办理。";
+    stopVoice(false);
+    refresh().catch(() => {});
+  }
   async startPublicVoice() {
     await this.context.audioWorklet.addModule("/assets/voice-capture.js");
     if (this.closed) return;
@@ -675,12 +744,7 @@ class Voice {
       socket.send(JSON.stringify({token,greet:!sessionStorage.getItem(key)}));
       socket.send("ready");
     };
-    socket.onclose = () => {
-      if (transport !== this || this.closed) return;
-      $("mic-status").textContent = this.finishing ? "已登记人工，通话已结束。" :
-        "语音连接已结束，可重新连接或继续文字办理。";
-      stopVoice(false);
-    };
+    socket.onclose = () => this.connectionLost();
     const source = this.context.createMediaStreamSource(this.stream);
     this.capture = new AudioWorkletNode(this.context,"voice-capture");
     this.capture.port.onmessage = ({data}) => {
@@ -710,6 +774,7 @@ class Voice {
       this.readyAt ??= performance.now();
       $("mic-status").textContent = "麦克风已连接，可直接交谈。";
       renderDialer();
+      if (document.activeElement === document.body) $("mic").focus();
     }
     if (data.type === "failure") notify(data.message);
     if (data.type === "asr_ended" && !this.finishing) {
@@ -717,7 +782,15 @@ class Voice {
       stopVoice(false);
     }
     if (data.type === "partial") {
+      clearTimeout(this.partialHintTimer);
       updatePartial(data.text ? "识别中 · " + data.text : "");
+      if (data.text) {
+        this.partialHintTimer = setTimeout(() => {
+          if (transport !== this) return;
+          updatePartial("");
+          notify("暂未收到完整的语音。您可以继续说，或改用文字。");
+        }, 4500);
+      }
     }
     if (data.type === "state") refresh().catch((e) => notify(e.message));
     if (data.type === "handoff") this.finishing = true;
@@ -823,6 +896,8 @@ class Voice {
     renderDialer();
   }
   interruptPlayback() {
+    clearTimeout(this.partialHintTimer);
+    updatePartial("");
     this.ignoreThrough = this.generation;
     this.flush();
   }
@@ -837,6 +912,7 @@ class Voice {
     this.closed = true;
     clearInterval(this.timer);
     clearTimeout(this.connectTimeout);
+    clearTimeout(this.partialHintTimer);
     this.flush();
     this.peer?.close();
     this.socket?.close();
@@ -871,16 +947,50 @@ async function connectVoice(call = new Voice()) {
     $("mic-status").textContent = e.name === "NotAllowedError"
       ? "浏览器尚未授予麦克风权限，请在地址栏允许后重试。"
       : "麦克风连接失败，请检查设备后重试。";
-    notify("麦克风连接失败 · " + e.message);
+    notify("语音连接失败，可以重新接通或继续文字办理。");
   }
 }
 $("mic").onclick = () => {
   if (transport?.readyAt != null) transport.setMicrophoneMuted(!transport.microphoneMuted);
   else if (!transport) connectVoice();
 };
-async function init() {
+window.addEventListener("pagehide", () => transport?.sendControl("detach"));
+async function restoreCall() {
+  const id = credential?.session_id;
+  if (!id) return;
+  try {
+    await refresh();
+  } catch (error) {
+    if (recovering !== id) return;
+    if ([401,403,404,410].includes(error.status)) {
+      credential = null;
+      recovering = null;
+      needsDeskLink = false;
+      sessionStorage.removeItem("zhiyu");
+      sessionStorage.removeItem(composeKey(id));
+      render(null);
+      notify("上一通电话已无法恢复。您可以重新呼出。");
+    } else {
+      $("mic-status").textContent = "暂时连不上服务，正在重试恢复当前通话。";
+    }
+    return;
+  }
+  if (!needsDeskLink || linkingDesk || credential?.session_id !== id) return;
+  linkingDesk = true;
+  try {
+    await desk("/api/desk/calls/" + id + "/link",{method:"POST",token:credential.token});
+    if (credential?.session_id === id) needsDeskLink = false;
+  } catch (error) {
+    if (credential?.session_id === id && [401,403,404,410].includes(error.status)) needsDeskLink = false;
+  } finally { linkingDesk = false; }
+}
+let featureCheckPending = false, featuresLoaded = false;
+async function loadFeatures() {
+  if (featureCheckPending || featuresLoaded) return;
+  featureCheckPending = true;
   try {
     features = await api("/health");
+    featuresLoaded = true;
     $("records-access").hidden = view === "call" || !features.records_admin_enabled;
     chip($("environment"),features.microphone ? "云语音已配置 · 业务沙箱" : "文本模式 · 业务沙箱");
     $("fault").disabled = !features.demo_faults;
@@ -891,18 +1001,20 @@ async function init() {
         $("public-notice").textContent = "公网演示请使用虚构资料。通话及预约记录保存在云端，网站管理员可查看。";
       }
     }
-    $("mic-status").textContent = features.microphone ? "可开启麦克风进行语音通话。" : "云语音待配置，当前可使用文本。";
-    if (credential) {
-      try {
-        await desk("/api/desk/calls/" + credential.session_id + "/link",{method:"POST",token:credential.token});
-        await refresh();
-      }
-      catch { credential = null; sessionStorage.removeItem("zhiyu"); render(null); }
-    }
+    if (!transport && !snapshot) $("mic-status").textContent = features.microphone
+      ? "可开启麦克风进行语音通话。" : "云语音待配置，当前可使用文本。";
+  } catch { chip($("environment"),"正在重试服务连接","warn"); }
+  finally {
+    featureCheckPending = false;
     renderDialer();
-  } catch { chip($("environment"),"服务不可用","fail"); }
+  }
+}
+function init() {
+  loadFeatures();
+  if (credential) restoreCall();
   setInterval(() => {
-    if (credential && !sent) refresh().catch(() => {});
+    if (!featuresLoaded) loadFeatures();
+    if (credential && !sent) restoreCall();
     if (view === "records") loadRecords().catch(() => {});
     if (view === "booking") loadBooking().catch(() => {});
   },850);

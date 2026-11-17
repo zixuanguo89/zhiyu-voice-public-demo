@@ -23,7 +23,8 @@ from services.config import Settings
 from services.desk import CallDesk
 from services.dialogue import BASELINE
 from services.evolution import Evolution, check_config, dataset, gate, paired_delta, verify_partitions
-from services.media import MediaCall
+from services.evolution_eval import exercise_bank
+from services.media import MediaCall, VoiceCall, submit_text
 from services.orchestrator import Conversation
 from services.providers import ProviderError, decode_event, message
 from services.quality import audit
@@ -741,7 +742,8 @@ class Cases(unittest.TestCase):
         self.assertIsNotNone(offered["offer"])
         self.say(session, "到店带什么材料？")
         self.assertEqual(self.say(session, "对啊")["appointment"]["status"], "unbooked")
-        self.assertEqual(self.say(session, "对啊")["appointment"]["status"], "active")
+        self.assertEqual(self.say(session, "对啊")["appointment"]["status"], "unbooked")
+        self.assertEqual(self.say(session, "确认预约")["appointment"]["status"], "active")
         self.say(session, "取消预约")
         self.assertEqual(self.say(session, "不要了")["appointment"]["status"], "active")
         self.assertIsNone(self.call.snapshot(session)["offer"])
@@ -780,7 +782,7 @@ class Cases(unittest.TestCase):
         desk = {"X-Desk-Token": "desk_" + "c" * 64}
         site = "https://example.test"
 
-        async def recognize(_provider, audio, on_text, on_ready):
+        async def recognize(_provider, audio, on_text, on_ready, **_options):
             on_ready()
             await audio.get()
             await on_text("我叫林小满", True, True)
@@ -867,7 +869,7 @@ class Cases(unittest.TestCase):
                 self.assertIn("给您自己办", help_reply["reply"])
                 retry = self.say(session, "嗯。")
                 self.assertFalse(retry["verified"])
-                self.assertIn("改用文字交谈", retry["reply"])
+                self.assertIn("打开文字输入", retry["reply"])
                 self.call.submit(session, words, reliable=False)
                 self.assertFalse(self.call.snapshot(session)["verified"])
                 verified = self.say(session, words)
@@ -896,9 +898,10 @@ class Cases(unittest.TestCase):
         self.assertEqual(self.operations(session), [])
 
         self.assertEqual(self.say(session, "到店要带啥呀？")["offer"], offered["offer"])
-        self.assertIn("要我帮您约", self.say(session, "好")["reply"])
+        self.assertIn("请明确", self.say(session, "好")["reply"])
+        self.say(session, "哦可以可以可以。")
         self.assertEqual(self.operations(session), [])
-        booked = self.say(session, "哦可以可以可以。")
+        booked = self.say(session, "确认预约")
         self.assertIn("预约成功", booked["reply"])
         self.assertEqual((booked["appointment"]["slot"], booked["appointment"]["version"]), ("S3", 1))
         self.assertIsNone(self.say(session, question, "可以")["offer"])
@@ -1009,6 +1012,153 @@ class Cases(unittest.TestCase):
         self.assertIn("需要真实语音",candidate["evidence"]["reasons"][0])
         self.assertEqual(len(candidate["evidence"]["generated_cases"]), 40)
         self.assertEqual(len(candidate["evidence"]["generated_replays"]["candidate"]), 40)
+
+    def test_blind_replay_scores_colloquial_document_question_without_writing(self):
+        case = {"id": "blind-document-question", "family": "blind:spoken-document-question",
+                "entity": "BLIND-001", "source": "blind-test-customer",
+                "turns": ["我叫林小满，手机号19900000991", "是本人", "去之前得带点什么？"],
+                "expected": {"writes": 0, "status": "unbooked", "topics": ["documents"],
+                             "reply_checks": [{"turn": 3, "contains": ["有效身份证件原件"]}]}}
+        baseline = asyncio.run(exercise_bank([case], BASELINE, self.lang))[0]
+        candidate = asyncio.run(exercise_bank([case], {**BASELINE, "knowledge_router": "contextual"}, self.lang))[0]
+        self.assertIn("knowledge_retrieval", baseline["failures"])
+        self.assertTrue(candidate["success"])
+        self.assertEqual(candidate["writes"], 0)
+
+    def test_contextual_schedule_recovery_anchors_offset_and_pauses_without_writes(self):
+        self.now = datetime(2026, 11, 16, 10, tzinfo=ZONE).timestamp()
+        with self.call.store.tx(write=True) as db:
+            db.execute("UPDATE policies SET config=? WHERE id='baseline'",
+                       (encode({**BASELINE, "schedule_recovery": "contextual"}),))
+        session, _ = self.call.open(desk="desk_" + "f" * 64, scenario="bank_card", customer_intake=True)
+        self.say(session, "我叫林小满，手机号19900000991", "是本人", "周二下午两点")
+        self.assertEqual(self.say(session, "等下，再晚半小时呢？")["offer"]["target_slot"], "S202611171430")
+        self.assertIsNone(self.say(session, "再晚一刻钟呢？")["offer"])
+        self.say(session, "四点")
+        paused = self.say(session, "我还没定呢，先不约了")
+        self.assertEqual(paused["state"], "COLLECTING")
+        self.assertIsNone(paused["offer"])
+        self.say(session, "周五下午五点可以吗？")
+        lookup = self.say(session, "周五四点半可以，我只是问问，还没决定")
+        self.assertIn("下午4点半", lookup["reply"])
+        self.assertIsNone(lookup["offer"])
+        self.assertEqual(self.operations(session), [])
+
+    def test_returning_customer_can_check_the_result_without_rebooking(self):
+        self.now = datetime(2026, 11, 16, 10, tzinfo=ZONE).timestamp()
+        with self.call.store.tx(write=True) as db:
+            db.execute("UPDATE policies SET config=? WHERE id='baseline'", (encode({
+                **BASELINE, "schedule_recovery": "contextual", "confirmation_lexicon": "conversational",
+            }),))
+        desk = "desk_" + "e" * 64
+        first, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
+        self.say(first, "我叫林小满，手机号19900000991", "是本人", "周二下午两点")
+        self.assertEqual(len(self.operations(first)), 0)
+        self.say(first, "确认预约")
+        self.assertEqual(len(self.operations(first)), 1)
+        second, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
+        self.say(second, "我叫林小满，手机号19900000991", "是本人")
+        result = self.say(second, "我不想重新预约，我只想知道系统里的结果")
+        self.assertIn("下午2点", result["reply"])
+        self.assertIn("1 笔有效预约", self.say(second, "我到底有几笔预约？")["reply"])
+        self.assertIn("没有提交新的", self.say(second, "好，确认")["reply"])
+        self.assertEqual(self.operations(second), [])
+
+    def test_default_policy_preserves_old_booking_after_withdrawal_or_question(self):
+        self.now = datetime(2026, 11, 16, 10, tzinfo=ZONE).timestamp()
+        session, _ = self.call.open(desk="desk_" + "e" * 64, scenario="bank_card", customer_intake=True)
+        self.say(session, "我叫林小满，手机号19900000991", "是本人", "周二下午两点", "确认预约")
+        self.assertEqual(len(self.operations(session)), 1)
+        self.say(session, "帮我取消预约")
+        result = self.say(session, "刚刚撤成功了么？")
+        self.assertIn("还没有取消", result["reply"])
+        self.assertIsNone(result["offer"])
+        self.say(session, "确认取消", "帮我取消预约", "先别撤，原来的留着", "确认取消")
+        self.assertEqual(len(self.operations(session)), 1)
+        self.say(session, "周三下午四点", "在哪家支行？", "可以", "可以")
+        self.assertEqual(len(self.operations(session)), 1)
+        self.assertEqual(self.call.snapshot(session)["appointment"]["slot"], "S202611171400")
+
+    def test_phone_segment_position_and_correction_are_respected(self):
+        session, _ = self.call.open(desk="desk_" + "e" * 64, scenario="bank_card", customer_intake=True)
+        self.say(session, "我叫林小满", "199")
+        self.assertIn("先说中间四位", self.say(session, "后四位8324")["reply"])
+        self.say(session, "0001", "中间四位改成0000")
+        self.assertIn("8 3 2 4", self.say(session, "8324")["reply"])
+        other, _ = self.call.open(desk="desk_" + "e" * 64, scenario="bank_card", customer_intake=True)
+        self.say(other, "我叫林小满", "我朋友的手机号19900008324，我的号我还没记起来", "是本人")
+        self.assertFalse(self.call.snapshot(other)["verified"])
+        self.assertEqual(self.operations(other), [])
+
+    def test_phone_correction_and_identity_refusal_revoke_old_authorization(self):
+        self.now = datetime(2026, 11, 16, 10, tzinfo=ZONE).timestamp()
+        desk = "desk_" + "e" * 64
+        session, _ = self.call.open(desk=desk, scenario="bank_card", customer_intake=True)
+        self.say(session, "我叫林小满，手机号19900008324", "是本人", "周二下午两点")
+        corrected = self.say(session, "等等手机号码错了，我的实际号码是19800001456")
+        self.assertIsNone(corrected["offer"])
+        self.assertFalse(corrected["verified"])
+        self.assertIn("1 4 5 6", corrected["reply"])
+        refused = self.say(session, "是我本人，不过我不同意核验")
+        self.assertFalse(refused["verified"])
+        self.say(session, "确认预约")
+        self.assertEqual(self.operations(session), [])
+
+    def test_cross_year_dates_and_inventory_queries_do_not_book_implicitly(self):
+        self.now = datetime(2026, 11, 27, 10, tzinfo=ZONE).timestamp()
+        session, _ = self.call.open(desk="desk_" + "e" * 64, scenario="bank_card", customer_intake=True)
+        self.say(session, "我叫林小满，手机号19900008324", "是本人")
+        for phrase in ("我想约2027年11月30日下午四点半", "我想约明年11月30日下午四点半",
+                       "我想约30号下下周一下午四点半", "我想约27年11月30日下午四点半"):
+            with self.subTest(phrase=phrase):
+                self.assertIsNone(self.say(session, phrase)["offer"])
+                self.say(session, "确认预约")
+        queried = self.say(session, "只想查一下三天之后下午三点有没有空位")
+        self.assertIsNone(queried["offer"])
+        self.assertIn("11月30号下午3点", queried["reply"])
+        self.say(session, "好")
+        self.assertEqual(self.operations(session), [])
+        self.assertIsNotNone(self.say(session, "我想约11月30日下午三点")["offer"])
+        self.say(session, "确认预约")
+        self.assertEqual(len(self.operations(session)), 1)
+
+    def test_voice_final_cannot_confirm_a_slot_changed_by_text(self):
+        self.now = datetime(2026, 11, 16, 10, tzinfo=ZONE).timestamp()
+        session, token = self.call.open(desk="desk_" + "a" * 64, scenario="bank_card", customer_intake=True)
+        self.say(session, "我叫林小满，手机号19900000991", "是我本人", "周四下午两点")
+
+        class TestCall(VoiceCall):
+            def send(self, value):
+                pass
+
+            async def speak(self, text, turn, generation):
+                pass
+
+        async def try_stale_confirmation():
+            call = TestCall(self.call, self.lang, None, session, token, False)
+            await call.on_text("确认预约", False, True)
+            await submit_text(self.call, self.lang, session, "周四下午两点半")
+            await call.on_text("确认预约", True, True)
+            await call.reply_task
+            await call.close()
+
+        asyncio.run(try_stale_confirmation())
+        self.assertEqual(self.operations(session), [])
+        self.assertEqual(self.call.snapshot(session)["offer"]["target_slot"], "S202611191430")
+        self.assertEqual(self.say(session, "确认预约")["appointment"]["slot"], "S202611191430")
+
+    def test_read_only_or_deferred_selection_does_not_consent_on_acknowledgment(self):
+        self.now = datetime(2026, 11, 16, 10, tzinfo=ZONE).timestamp()
+        with self.call.store.tx(write=True) as db:
+            db.execute("UPDATE policies SET config=? WHERE id='baseline'", (encode(
+                {**BASELINE, "schedule_recovery": "contextual", "knowledge_router": "contextual"}),))
+        for question in ("可以是可以，你先别提交，我这会儿走不开", "今天下午四点之后还有哪几档？", "周末开门不"):
+            with self.subTest(question=question):
+                session, _ = self.call.open(desk="desk_" + "b" * 64, scenario="bank_card", customer_intake=True)
+                self.say(session, "我叫林小满，手机号19900000991", "是我本人", "周四下午两点")
+                self.assertIsNone(self.say(session, question)["offer"])
+                self.say(session, "好")
+                self.assertEqual(self.operations(session), [])
 
     def test_grouped_phone_drafts_are_private_until_complete_and_cleared_on_handoff(self):
         app = create_app(self.settings())
