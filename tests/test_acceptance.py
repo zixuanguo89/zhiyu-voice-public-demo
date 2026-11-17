@@ -1025,6 +1025,16 @@ class Cases(unittest.TestCase):
         self.assertTrue(candidate["success"])
         self.assertEqual(candidate["writes"], 0)
 
+    def test_schedule_offset_distinguishes_a_question_from_a_refusal(self):
+        self.now = datetime(2026, 11, 16, 10, tzinfo=ZONE).timestamp()
+        session, _ = self.call.open(desk="desk_" + "d" * 64, scenario="bank_card", customer_intake=True)
+        self.say(session, "我叫林小满，手机号19900000991", "是我本人", "我想约周二下午三点")
+        moved = self.say(session, "刚才那个时间能不能晚半小时")
+        self.assertEqual(moved["offer"]["target_slot"], "S202611171530")
+        refused = self.say(session, "我不能再晚半小时")
+        self.assertNotIn("下午4点", refused["reply"])
+        self.assertEqual(self.operations(session), [])
+
     def test_contextual_schedule_recovery_anchors_offset_and_pauses_without_writes(self):
         self.now = datetime(2026, 11, 16, 10, tzinfo=ZONE).timestamp()
         with self.call.store.tx(write=True) as db:

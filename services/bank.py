@@ -647,7 +647,8 @@ def bank_intent(text, available=(), active_slot=None, *, today=None, ordinal_slo
     if not topics and not has_calendar_day(time_words):
         offset = re.search(r"(早|晚|提前|推迟|延后|往后挪|往前挪)(?:个)?(半[个]?小时|半[个]?钟(?:头)?|一[个]?小时|三十分钟|30分钟|一刻钟)"
                            r"(?:可以吗|行吗|呢|吧|好吗|日子别动)?[。？?！!]*$", words)
-        if offset and not re.search(r"(?:不要|不想|不能|别).{0,4}(?:早|晚|提前|推迟|延后)", words):
+        directive = re.sub(r"能不能|可不可以|行不行", "", words)
+        if offset and not re.search(r"(?:不要|不想|不能|别).{0,4}(?:早|晚|提前|推迟|延后)", directive):
             minutes = 15 if offset[2] == "一刻钟" else 60 if offset[2].startswith("一") else 30
             return "offset_time", -minutes if offset[1] in {"早", "提前", "往前挪"} else minutes
     relative = re.search(r"([早晚])(?:一)?点(?:儿)?|([早晚])一些", words)
